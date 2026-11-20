@@ -436,11 +436,12 @@ func (s *Sandbox) applyDocument(document *sandboxDocument) {
 }
 
 type sandboxDocument struct {
-	ID          string `json:"id"`
-	State       string `json:"state"`
-	Template    string `json:"template"`
-	ToolboxBase string `json:"toolboxBase"`
-	ErrorReason string `json:"errorReason"`
+	ID          string     `json:"id"`
+	State       string     `json:"state"`
+	Template    string     `json:"template"`
+	ToolboxBase string     `json:"toolboxBase"`
+	ErrorReason string     `json:"errorReason"`
+	ExpiresAt   *time.Time `json:"expiresAt"`
 }
 
 type sandboxEnvelope struct {

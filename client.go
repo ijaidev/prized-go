@@ -35,6 +35,8 @@ const (
 	DefaultStartTimeout = 180 * time.Second
 	// DefaultDeleteTimeout bounds a delete and its optional wait.
 	DefaultDeleteTimeout = 120 * time.Second
+	// DefaultPauseTimeout bounds a pause and its wait for paused.
+	DefaultPauseTimeout = 120 * time.Second
 	// DefaultExecTimeout bounds a command when the call names none.
 	DefaultExecTimeout = 60 * time.Second
 )
