@@ -739,6 +739,30 @@ func TestUploadAndDownloadLocalFiles(t *testing.T) {
 	}
 }
 
+func TestUploadRefusesOversizeLocalFile(t *testing.T) {
+	api, sandbox := newFilesFixture(t)
+	local := filepath.Join(t.TempDir(), "big.bin")
+	file, err := os.Create(local)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := file.Truncate(MaxFileBytes + 1); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err = sandbox.Files().Upload(context.Background(), local, "big.bin", nil)
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "file_too_large" {
+		t.Fatalf("error = %v, want file_too_large", err)
+	}
+	if uploads, _ := api.fileCounts(); uploads != 0 {
+		t.Fatalf("uploads = %d, want 0", uploads)
+	}
+}
+
 func TestUploadLocalErrorStaysLocal(t *testing.T) {
 	api, sandbox := newFilesFixture(t)
 	_, err := sandbox.Files().Upload(context.Background(), filepath.Join(t.TempDir(), "nope"), "x", nil)

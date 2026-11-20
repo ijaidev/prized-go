@@ -71,10 +71,10 @@ func TestLiveFiles(t *testing.T) {
 
 	files := sandbox.Files()
 	mode := os.FileMode(0o755)
-	if _, err := files.Write(ctx, "greet.sh", []byte("#!/bin/sh\necho live-files\n"), &WriteOptions{Mode: &mode}); err != nil {
+	if _, err := files.Write(ctx, "nested/dir/greet.sh", []byte("#!/bin/sh\necho live-files\n"), &WriteOptions{Mode: &mode}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	result, err := sandbox.Exec(ctx, "./greet.sh > greet.out", nil)
+	result, err := sandbox.Exec(ctx, "./nested/dir/greet.sh > greet.out", nil)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestLiveFiles(t *testing.T) {
 	if err != nil || !exists {
 		t.Fatalf("Exists = %v, %v", exists, err)
 	}
-	entries, err := files.List(ctx, "")
+	entries, err := files.List(ctx, "nested/dir")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
