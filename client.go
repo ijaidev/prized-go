@@ -40,6 +40,8 @@ const (
 	DefaultCallTimeout = 120 * time.Second
 	// DefaultExecTimeout bounds a command when the call names none.
 	DefaultExecTimeout = 60 * time.Second
+	// DefaultPollOutage is how long a wait keeps polling through an outage.
+	DefaultPollOutage = 120 * time.Second
 )
 
 const userAgent = "prized-go/0.1.0"
@@ -60,6 +62,7 @@ type clientOptions struct {
 	timeoutSet     bool
 	pollInterval   time.Duration
 	pollSet        bool
+	pollOutage     time.Duration
 }
 
 // WithAPIKey sets the key sent with every request. Without this option the
@@ -112,6 +115,15 @@ func WithPollInterval(interval time.Duration) Option {
 	}
 }
 
+// WithPollOutage sets how long a streamed command's or a command handle's
+// wait keeps polling through an outage before it gives up. Zero gives up as
+// soon as one poll's retries run out.
+func WithPollOutage(outage time.Duration) Option {
+	return func(options *clientOptions) {
+		options.pollOutage = outage
+	}
+}
+
 // Client holds authentication and transport settings.
 type Client struct {
 	apiKey         string
@@ -121,6 +133,7 @@ type Client struct {
 	maxRetries     int
 	requestTimeout time.Duration
 	pollInterval   time.Duration
+	pollOutage     time.Duration
 	retryBase      time.Duration
 	sandboxes      *Sandboxes
 }
@@ -133,6 +146,7 @@ func NewClient(options ...Option) (*Client, error) {
 		maxRetries:     DefaultMaxRetries,
 		requestTimeout: DefaultRequestTimeout,
 		pollInterval:   DefaultPollInterval,
+		pollOutage:     DefaultPollOutage,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -167,6 +181,9 @@ func NewClient(options ...Option) (*Client, error) {
 	if config.pollInterval <= 0 {
 		return nil, newError("invalid_argument", "pollInterval must be greater than zero")
 	}
+	if config.pollOutage < 0 {
+		return nil, newError("invalid_argument", "pollOutage must be zero or greater")
+	}
 
 	httpClient := config.httpClient
 	if config.httpClientSet && httpClient == nil {
@@ -194,6 +211,7 @@ func NewClient(options ...Option) (*Client, error) {
 		maxRetries:     config.maxRetries,
 		requestTimeout: config.requestTimeout,
 		pollInterval:   config.pollInterval,
+		pollOutage:     config.pollOutage,
 		retryBase:      500 * time.Millisecond,
 	}
 	client.sandboxes = &Sandboxes{client: client}
