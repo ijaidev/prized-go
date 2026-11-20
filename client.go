@@ -236,7 +236,7 @@ type requestMode int
 
 const (
 	requestRead requestMode = iota
-	requestKeyed
+	requestSafe
 	requestExec
 	// requestStaged is a write's upload to a fresh staging name: safe to send
 	// again, unlike one straight to the file.
@@ -280,15 +280,18 @@ func readResponseBody(response *http.Response, maxBody int64) ([]byte, error) {
 	return body, nil
 }
 
+// neverRetry lists refusals that no wait can change. Because they also prove
+// the request did nothing, a 5xx carrying one keeps EffectNotRun.
 var neverRetry = map[string]bool{
-	"sandbox_quota_exceeded":  true,
-	"sandboxes_disabled":      true,
-	"sandbox_create_disabled": true,
-	"sandbox_fork_disabled":   true,
-	"idempotency_conflict":    true,
-	"paid_balance_required":   true,
-	"insufficient_balance":    true,
-	"preview_unavailable":     true,
+	"sandbox_quota_exceeded":   true,
+	"sandboxes_disabled":       true,
+	"sandbox_create_disabled":  true,
+	"sandbox_fork_disabled":    true,
+	"idempotency_conflict":     true,
+	"paid_balance_required":    true,
+	"insufficient_balance":     true,
+	"preview_unavailable":      true,
+	"share_links_need_payment": true,
 }
 
 var execUndelivered = map[string]bool{
@@ -395,7 +398,24 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*httpResponse, error
 				}
 			}
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, contextError(ctxErr, spec.sandboxID, mergeEffect(&Error{Effect: EffectMaybeRan}, acted).Effect)
+				effect := mergeEffect(&Error{Effect: EffectMaybeRan}, acted).Effect
+				if response.StatusCode >= 200 && response.StatusCode < 300 {
+					effect = EffectRan
+				}
+				return nil, contextError(ctxErr, spec.sandboxID, effect)
+			}
+			if response.StatusCode >= 200 && response.StatusCode < 300 &&
+				(spec.mode == requestExec || spec.mode == requestStaged) {
+				// The status came but the body did not: the sandbox acted. A
+				// staged upload is not sent again.
+				return nil, &Error{
+					Code:      "bad_response",
+					Status:    response.StatusCode,
+					Message:   "the answer broke off after the sandbox acted",
+					SandboxID: spec.sandboxID,
+					Effect:    EffectRan,
+					cause:     readErr,
+				}
 			}
 			failure := &Error{
 				Code:      "network_error",
@@ -428,7 +448,7 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*httpResponse, error
 
 		failure := errorFromResponse(response.StatusCode, body, response.Header, spec.sandboxID)
 		if response.StatusCode >= 500 && spec.mode != requestRead {
-			if !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] {
+			if !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
 				failure.Effect = EffectMaybeRan
 			}
 		}

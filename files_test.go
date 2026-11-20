@@ -214,6 +214,102 @@ func TestWriteRefusesBadModeAndOversize(t *testing.T) {
 	}
 }
 
+func TestWriteHonorsExplicitModeOnDirectPath(t *testing.T) {
+	api, sandbox := newFilesFixture(t)
+	api.execHandler = successfulExec()
+	path := "/home/prized/work/../escape.txt"
+
+	info, err := sandbox.Files().Write(context.Background(), path, []byte("#!/bin/sh\n"), &WriteOptions{Mode: fileMode(0o755)})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if info.Path != path || info.Size != 10 {
+		t.Fatalf("info = %#v", info)
+	}
+	paths, _, _ := api.uploadLog()
+	if len(paths) != 1 || paths[0] != path {
+		t.Fatalf("upload paths = %#v", paths)
+	}
+	commands, _ := api.execLog()
+	want := "chmod 755 -- " + path
+	if len(commands) != 1 || commands[0] != want {
+		t.Fatalf("commands = %#v, want %q", commands, want)
+	}
+}
+
+func TestWriteLandedUploadWithUnreadableBodyPublishes(t *testing.T) {
+	api, sandbox := newFilesFixture(t)
+	api.execHandler = successfulExec()
+	api.uploadHandler = func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}
+
+	info, err := sandbox.Files().Write(context.Background(), "notes.txt", []byte("hello"), nil)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if info.Path != "/home/prized/work/notes.txt" || info.Size != 5 {
+		t.Fatalf("info = %#v", info)
+	}
+	if paths, _, _ := api.uploadLog(); len(paths) != 1 {
+		t.Fatalf("uploads = %d, want 1", len(paths))
+	}
+	commands, _ := api.execLog()
+	if countCommands(commands, "mv -fT") != 1 {
+		t.Fatalf("commands = %#v, want one publish", commands)
+	}
+	if countCommands(commands, `rm -f -- "$p"`) != 0 {
+		t.Fatalf("commands = %#v, want no discard", commands)
+	}
+}
+
+func truncatedUpload(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Length", "40")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("partial"))
+}
+
+func TestWriteLandedUploadBodyCutPublishesOnce(t *testing.T) {
+	api, sandbox := newFilesFixture(t)
+	api.execHandler = successfulExec()
+	api.uploadHandler = truncatedUpload
+
+	info, err := sandbox.Files().Write(context.Background(), "notes.txt", []byte("hello"), nil)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if info.Path != "/home/prized/work/notes.txt" || info.Size != 5 {
+		t.Fatalf("info = %#v", info)
+	}
+	if paths, _, _ := api.uploadLog(); len(paths) != 1 {
+		t.Fatalf("uploads = %d, want 1: a 2xx upload is not sent again", len(paths))
+	}
+	commands, _ := api.execLog()
+	if countCommands(commands, "mv -fT") != 1 {
+		t.Fatalf("commands = %#v, want one publish", commands)
+	}
+	if countCommands(commands, `rm -f -- "$p"`) != 0 {
+		t.Fatalf("commands = %#v, want no discard", commands)
+	}
+}
+
+func TestDirectUploadLandedBodyCutReportsRan(t *testing.T) {
+	api, sandbox := newFilesFixture(t)
+	api.uploadHandler = truncatedUpload
+
+	_, err := sandbox.Files().Write(context.Background(), "/tmp/outside.txt", []byte("hello"), nil)
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "bad_response" {
+		t.Fatalf("error = %v, want bad_response", err)
+	}
+	if failure.Status != http.StatusOK || failure.Effect != EffectRan {
+		t.Fatalf("error = %#v, want status 200 and ran", failure)
+	}
+	if paths, _, _ := api.uploadLog(); len(paths) != 1 {
+		t.Fatalf("uploads = %d, want 1", len(paths))
+	}
+}
+
 func TestWriteStagedUploadRetriesSameName(t *testing.T) {
 	api, sandbox := newFilesFixture(t)
 	api.execHandler = successfulExec()

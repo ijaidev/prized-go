@@ -127,8 +127,18 @@ func (f *Files) Write(ctx context.Context, path string, data []byte, options *Wr
 
 	clean, staged := stagingPlan(target)
 	if !staged {
-		// The files API judges the path itself, as for any upload.
-		return f.send(ctx, target, data, target, requestExec)
+		// The files API judges the path itself, as for any upload. An explicit
+		// mode is applied once it lands, as for a link's fallback upload.
+		info, err := f.send(ctx, target, data, target, requestExec)
+		if err != nil {
+			return nil, err
+		}
+		if mode != nil {
+			if err := f.chmod(ctx, target, *mode); err != nil {
+				return nil, err
+			}
+		}
+		return info, nil
 	}
 	suffix, err := stagingSuffix()
 	if err != nil {
@@ -136,7 +146,10 @@ func (f *Files) Write(ctx context.Context, path string, data []byte, options *Wr
 	}
 	staging := clean[:strings.LastIndex(clean, "/")+1] + stagingPrefix + suffix
 	if _, err := f.send(ctx, staging, data, clean, requestStaged); err != nil {
-		return nil, f.stagedUploadFailed(err, staging, clean)
+		if !answerLanded(err) {
+			return nil, f.stagedUploadFailed(err, staging, clean)
+		}
+		// The sandbox answered 2xx: every byte is there even if its body broke off.
 	}
 
 	result, err := f.runCommand(ctx, publishScript(staging, clean, mode), fileHomeDir, requestExec)
@@ -373,21 +386,15 @@ func (f *Files) send(ctx context.Context, uploadPath string, data []byte, target
 			Path string `json:"path"`
 			Size *int64 `json:"size"`
 		}
-		if err := json.Unmarshal(response.body, &document); err != nil {
-			return nil, &Error{
-				Code:      "bad_response",
-				Status:    response.status,
-				Message:   "the upload answer could not be read",
-				SandboxID: f.sandbox.ID(),
-				Effect:    EffectRan,
-				cause:     err,
+		// An answer the client cannot read still proves the upload landed:
+		// keep the bytes sent as the size and publish, as both references do.
+		if json.Unmarshal(response.body, &document) == nil {
+			if uploadPath == target && document.Path != "" {
+				info.Path = document.Path
 			}
-		}
-		if uploadPath == target && document.Path != "" {
-			info.Path = document.Path
-		}
-		if document.Size != nil && *document.Size >= 0 {
-			info.Size = *document.Size
+			if document.Size != nil && *document.Size >= 0 {
+				info.Size = *document.Size
+			}
 		}
 	}
 	return info, nil
@@ -395,15 +402,11 @@ func (f *Files) send(ctx context.Context, uploadPath string, data []byte, target
 
 // stagedUploadFailed words a failed staged upload as what it is: the target
 // was not changed, though the bytes may have reached the sandbox. The staging
-// file is discarded when a copy may have landed; one whose 2xx arrived but
-// whose body could not be read is all there and is left for the caller to
-// overwrite.
+// file is discarded when a copy may have landed.
 func (f *Files) stagedUploadFailed(err error, staging, target string) error {
-	landed := false
 	mayHave := true
 	var failure *Error
 	if errors.As(err, &failure) {
-		landed = failure.Status >= 200 && failure.Status < 300
 		mayHave = failure.Effect != EffectNotRun
 		if failure.Effect != EffectNotRun {
 			message := strings.TrimSuffix(failure.Message, ".")
@@ -411,7 +414,7 @@ func (f *Files) stagedUploadFailed(err error, staging, target string) error {
 		}
 		failure.Effect = EffectNotRun
 	}
-	if !landed && mayHave {
+	if mayHave {
 		f.discard(staging)
 	}
 	return err

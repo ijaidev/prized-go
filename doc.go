@@ -2,5 +2,5 @@
 //
 // A Client holds authentication and transport settings; its Sandboxes service
 // creates sandboxes. A Sandbox handle runs foreground commands, moves files in
-// and out, and deletes the sandbox it names.
+// and out, exposes ports at preview URLs, and deletes the sandbox it names.
 package prized
