@@ -10,15 +10,17 @@ import (
 	"time"
 )
 
-// Effect says whether an operation reached the service before it failed.
+// Effect says whether the operation the caller asked for took effect, or may
+// have. A write whose staged upload failed is EffectNotRun: its bytes may have
+// reached the sandbox under a temporary name, but the target was not changed.
 type Effect int
 
 const (
-	// EffectNotRun means the request provably never ran.
+	// EffectNotRun means the operation provably did not take effect.
 	EffectNotRun Effect = iota
-	// EffectMaybeRan means the request may have run: its answer was lost.
+	// EffectMaybeRan means the operation may have taken effect: its answer was lost.
 	EffectMaybeRan
-	// EffectRan means the request ran, whatever happened to its answer.
+	// EffectRan means the operation definitely ran, whatever happened to its answer.
 	EffectRan
 )
 
@@ -40,7 +42,7 @@ func (e Effect) String() string {
 // machine-readable error, or one of the client's own codes such as
 // missing_api_key, network_error, timeout, canceled, bad_response, or
 // handle_closed. Body is the decoded error document when the answer carried
-// one. Effect classifies whether the operation ran before the failure.
+// one. Effect classifies whether the operation took effect or may have.
 // ExitCode is the command's exit code when the failure came after it ran.
 type Error struct {
 	Code       string
@@ -236,6 +238,11 @@ var defaultMessages = map[string]string{
 	"command_failed":           "the command failed in the sandbox",
 	"output_read_failed":       "the command ran, but its output could not be read back",
 	"command_timeout":          "the command ran past its timeout and was killed",
+	"file_too_large":           "the file is over the 100 MiB transfer limit",
+	"not_directory":            "the path is not a directory",
+	"directory_not_empty":      "the directory has files in it; remove it recursively",
+	"unsupported_file_type":    "only a regular file can be written",
+	"permission_denied":        "the sandbox user may not do that",
 	"network_error":            "could not reach the Prized API",
 	"timeout":                  "the operation timed out",
 	"canceled":                 "the operation was canceled",
