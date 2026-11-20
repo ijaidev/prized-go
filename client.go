@@ -239,7 +239,7 @@ type requestMode int
 
 const (
 	requestRead requestMode = iota
-	requestKeyed
+	requestSafe
 	requestExec
 	// requestBulkDelete is a mutation that selects its targets again on every
 	// request, so it is sent again only when it provably never arrived.
@@ -262,15 +262,18 @@ type httpResponse struct {
 	body   []byte
 }
 
+// neverRetry lists refusals that no wait can change. Because they also prove
+// the request did nothing, a 5xx carrying one keeps EffectNotRun.
 var neverRetry = map[string]bool{
-	"sandbox_quota_exceeded":  true,
-	"sandboxes_disabled":      true,
-	"sandbox_create_disabled": true,
-	"sandbox_fork_disabled":   true,
-	"idempotency_conflict":    true,
-	"paid_balance_required":   true,
-	"insufficient_balance":    true,
-	"preview_unavailable":     true,
+	"sandbox_quota_exceeded":   true,
+	"sandboxes_disabled":       true,
+	"sandbox_create_disabled":  true,
+	"sandbox_fork_disabled":    true,
+	"idempotency_conflict":     true,
+	"paid_balance_required":    true,
+	"insufficient_balance":     true,
+	"preview_unavailable":      true,
+	"share_links_need_payment": true,
 }
 
 var execUndelivered = map[string]bool{
@@ -405,10 +408,10 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*httpResponse, error
 			if spec.mode == requestBulkDelete {
 				// A gateway error may come after the delete ran. Refusals
 				// known to happen before anything changes stay not_run.
-				if !refusedBeforeCreate[failure.Code] {
+				if !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
 					failure.Effect = EffectMaybeRan
 				}
-			} else if spec.mode != requestRead && !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] {
+			} else if spec.mode != requestRead && !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
 				failure.Effect = EffectMaybeRan
 			}
 		}

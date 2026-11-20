@@ -97,23 +97,24 @@ type ExecResult struct {
 type Sandbox struct {
 	client *Client
 
-	mu            sync.RWMutex
-	id            string
-	state         string
-	template      string
-	templateBuild string
-	resources     SandboxResources
-	labels        map[string]string
-	autoPauseMin  int
-	autoDeleteMin int
-	maxRuntimeMin int
-	expiresAt     time.Time
-	createdAt     time.Time
-	lastActiveAt  time.Time
-	errorReason   string
-	toolboxBase   string
-	raw           map[string]any
-	closed        bool
+	mu                 sync.RWMutex
+	id                 string
+	state              string
+	template           string
+	templateBuild      string
+	resources          SandboxResources
+	labels             map[string]string
+	autoPauseMin       int
+	autoDeleteMin      int
+	maxRuntimeMin      int
+	expiresAt          time.Time
+	createdAt          time.Time
+	lastActiveAt       time.Time
+	errorReason        string
+	toolboxBase        string
+	previewURLTemplate string
+	raw                map[string]any
+	closed             bool
 }
 
 // ID returns the sandbox id.
@@ -337,7 +338,7 @@ func (s *Sandboxes) Create(ctx context.Context, options CreateSandboxOptions) (*
 			"Content-Type":    "application/json",
 			"Idempotency-Key": key,
 		},
-		mode: requestKeyed,
+		mode: requestSafe,
 	})
 	if err != nil {
 		if generatedKey && mayHaveCreated(err) {
@@ -622,6 +623,7 @@ func (s *Sandbox) applyDocument(document *sandboxDocument) {
 	s.expiresAt = parseAPITime(document.ExpiresAt)
 	s.createdAt = parseAPITime(document.CreatedAt)
 	s.lastActiveAt = parseAPITime(document.LastActiveAt)
+	s.previewURLTemplate = document.PreviewURLTemplate
 	s.errorReason = document.ErrorReason
 	s.raw = document.raw
 }
@@ -656,20 +658,21 @@ func parseAPITime(value string) time.Time {
 }
 
 type sandboxDocument struct {
-	ID            string            `json:"id"`
-	State         string            `json:"state"`
-	Template      string            `json:"template"`
-	TemplateBuild string            `json:"templateBuild"`
-	Resources     SandboxResources  `json:"resources"`
-	Labels        map[string]string `json:"labels"`
-	AutoPauseMin  *int              `json:"autoPauseMin"`
-	AutoDeleteMin *int              `json:"autoDeleteMin"`
-	MaxRuntimeMin *int              `json:"maxRuntimeMin"`
-	ExpiresAt     string            `json:"expiresAt"`
-	CreatedAt     string            `json:"createdAt"`
-	LastActiveAt  string            `json:"lastActiveAt"`
-	ErrorReason   string            `json:"errorReason"`
-	ToolboxBase   string            `json:"toolboxBase"`
+	ID                 string            `json:"id"`
+	State              string            `json:"state"`
+	Template           string            `json:"template"`
+	TemplateBuild      string            `json:"templateBuild"`
+	Resources          SandboxResources  `json:"resources"`
+	Labels             map[string]string `json:"labels"`
+	AutoPauseMin       *int              `json:"autoPauseMin"`
+	AutoDeleteMin      *int              `json:"autoDeleteMin"`
+	MaxRuntimeMin      *int              `json:"maxRuntimeMin"`
+	ExpiresAt          string            `json:"expiresAt"`
+	CreatedAt          string            `json:"createdAt"`
+	LastActiveAt       string            `json:"lastActiveAt"`
+	ToolboxBase        string            `json:"toolboxBase"`
+	PreviewURLTemplate string            `json:"previewUrlTemplate"`
+	ErrorReason        string            `json:"errorReason"`
 
 	raw map[string]any
 }
@@ -771,7 +774,7 @@ func (c *Client) reclaimCreate(key string, body []byte) {
 			"Content-Type":    "application/json",
 			"Idempotency-Key": key,
 		},
-		mode: requestKeyed,
+		mode: requestSafe,
 	})
 	if err != nil {
 		return

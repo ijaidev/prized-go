@@ -24,6 +24,8 @@ type testAPI struct {
 	templateGets        int
 	bulkDeletes         int
 	connects            int
+	tokenCalls          int
+	publicCalls         int
 	state               string
 	deleteStatus        int
 	getFailures         int
@@ -34,9 +36,15 @@ type testAPI struct {
 	templatesHandler    http.HandlerFunc
 	deleteLabelsHandler http.HandlerFunc
 	connectHandler      http.HandlerFunc
+	tokenHandler        http.HandlerFunc
+	publicHandler       http.HandlerFunc
 	createBody          map[string]any
+	tokenBody           map[string]any
+	publicBody          map[string]any
 	idempotencyKey      []string
 }
+
+const testPreviewURLTemplate = "https://{port}-sbx.preview.prized.test/"
 
 func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
@@ -130,6 +138,34 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "no exec handler", http.StatusInternalServerError)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sandboxes/sbx_1/ports/3000/token":
+		a.mu.Lock()
+		a.tokenCalls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			a.tokenBody = body
+		}
+		handler := a.tokenHandler
+		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		http.Error(w, "no token handler", http.StatusInternalServerError)
+	case r.Method == http.MethodPut && r.URL.Path == "/api/v1/sandboxes/sbx_1/ports/3000":
+		a.mu.Lock()
+		a.publicCalls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			a.publicBody = body
+		}
+		handler := a.publicHandler
+		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		http.Error(w, "no public handler", http.StatusInternalServerError)
 	case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/sandboxes/sbx_1":
 		a.mu.Lock()
 		a.deletes++
@@ -183,10 +219,11 @@ func (a *testAPI) discoveryCounts() (lists, templates, bulkDeletes, connects int
 func writeSandbox(w http.ResponseWriter, status int, state, base string) {
 	writeJSON(w, status, map[string]any{
 		"sandbox": map[string]any{
-			"id":          "sbx_1",
-			"state":       state,
-			"template":    DefaultTemplate,
-			"toolboxBase": base + "/v1/sandbox/sbx_1",
+			"id":                 "sbx_1",
+			"state":              state,
+			"template":           DefaultTemplate,
+			"toolboxBase":        base + "/v1/sandbox/sbx_1",
+			"previewUrlTemplate": testPreviewURLTemplate,
 		},
 	})
 }
