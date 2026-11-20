@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "autonomy": "deliver",
+  "watch": "auto",
+  "specHome": "issue",
+  "commands": {
+    "test": null,
+    "lint": null,
+    "build": null
+  }
+}

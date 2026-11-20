@@ -1,0 +1,61 @@
+{
+  "version": 2,
+  "skills": {
+    "os-grill": {
+      "source": "ijaidev/openship",
+      "commit": "2297e4adae575c088d3cae81030de988f4f75a00",
+      "sourceType": "github",
+      "skillPath": "skills/os-grill/SKILL.md",
+      "computedHash": "87128461e482b30a2a8e4f4e9008fa251d92f67d21879c49732f3f6b1b8bcecf"
+    },
+    "os-implement": {
+      "source": "ijaidev/openship",
+      "commit": "2297e4adae575c088d3cae81030de988f4f75a00",
+      "sourceType": "github",
+      "skillPath": "skills/os-implement/SKILL.md",
+      "computedHash": "b2431ca659dff806ca9a005bd1a11d8213370f2c9413645b1b09ce353ee88651"
+    },
+    "os-pr-watch": {
+      "source": "ijaidev/openship",
+      "commit": "2297e4adae575c088d3cae81030de988f4f75a00",
+      "sourceType": "github",
+      "skillPath": "skills/os-pr-watch/SKILL.md",
+      "computedHash": "f6cf8715a5a8e01dd67b60761820da4f6a65692e64a2a411f3d876662bb4a420"
+    },
+    "os-review": {
+      "source": "ijaidev/openship",
+      "commit": "2297e4adae575c088d3cae81030de988f4f75a00",
+      "sourceType": "github",
+      "skillPath": "skills/os-review/SKILL.md",
+      "computedHash": "f99aeded61ed1e65c5584836348b822a8ec05b64db9feadf6547056b3dca72c9"
+    },
+    "os-setup": {
+      "source": "ijaidev/openship",
+      "commit": "2297e4adae575c088d3cae81030de988f4f75a00",
+      "sourceType": "github",
+      "skillPath": "skills/os-setup/SKILL.md",
+      "computedHash": "4ff3c5a60c42e54a558c7e71bc285bbbf79acf4445140b95d5eb270ae153a9cc"
+    },
+    "os-spec": {
+      "source": "ijaidev/openship",
+      "commit": "2297e4adae575c088d3cae81030de988f4f75a00",
+      "sourceType": "github",
+      "skillPath": "skills/os-spec/SKILL.md",
+      "computedHash": "02a3e9474c759809399bfa91d2a9615767cfc729a6a9320b413421edc17173d6"
+    },
+    "os-tickets": {
+      "source": "ijaidev/openship",
+      "commit": "2297e4adae575c088d3cae81030de988f4f75a00",
+      "sourceType": "github",
+      "skillPath": "skills/os-tickets/SKILL.md",
+      "computedHash": "b4bc2c4cc605c123192835f3b53c2df935fe4eb044e7b1d46711ce128e91e699"
+    },
+    "os-triage": {
+      "source": "ijaidev/openship",
+      "commit": "2297e4adae575c088d3cae81030de988f4f75a00",
+      "sourceType": "github",
+      "skillPath": "skills/os-triage/SKILL.md",
+      "computedHash": "028e8214b09dda7df3313a6e4c6c140af75f0e342cafbb2dbb710810fc63a0ad"
+    }
+  }
+}
