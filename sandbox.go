@@ -66,13 +66,14 @@ type ExecResult struct {
 type Sandbox struct {
 	client *Client
 
-	mu          sync.RWMutex
-	id          string
-	state       string
-	template    string
-	toolboxBase string
-	errorReason string
-	closed      bool
+	mu                 sync.RWMutex
+	id                 string
+	state              string
+	template           string
+	toolboxBase        string
+	previewURLTemplate string
+	errorReason        string
+	closed             bool
 }
 
 // ID returns the sandbox id.
@@ -158,7 +159,7 @@ func (s *Sandboxes) Create(ctx context.Context, options CreateSandboxOptions) (*
 			"Content-Type":    "application/json",
 			"Idempotency-Key": key,
 		},
-		mode: requestKeyed,
+		mode: requestSafe,
 	})
 	if err != nil {
 		if generatedKey && mayHaveCreated(err) {
@@ -432,15 +433,17 @@ func (s *Sandbox) applyDocument(document *sandboxDocument) {
 	if document.ToolboxBase != "" {
 		s.toolboxBase = document.ToolboxBase
 	}
+	s.previewURLTemplate = document.PreviewURLTemplate
 	s.errorReason = document.ErrorReason
 }
 
 type sandboxDocument struct {
-	ID          string `json:"id"`
-	State       string `json:"state"`
-	Template    string `json:"template"`
-	ToolboxBase string `json:"toolboxBase"`
-	ErrorReason string `json:"errorReason"`
+	ID                 string `json:"id"`
+	State              string `json:"state"`
+	Template           string `json:"template"`
+	ToolboxBase        string `json:"toolboxBase"`
+	PreviewURLTemplate string `json:"previewUrlTemplate"`
+	ErrorReason        string `json:"errorReason"`
 }
 
 type sandboxEnvelope struct {
@@ -465,12 +468,13 @@ func parseSandboxDocument(status int, body []byte) (*sandboxDocument, error) {
 
 func newSandbox(client *Client, document *sandboxDocument) *Sandbox {
 	sandbox := &Sandbox{
-		client:      client,
-		id:          document.ID,
-		state:       document.State,
-		template:    document.Template,
-		toolboxBase: document.ToolboxBase,
-		errorReason: document.ErrorReason,
+		client:             client,
+		id:                 document.ID,
+		state:              document.State,
+		template:           document.Template,
+		toolboxBase:        document.ToolboxBase,
+		previewURLTemplate: document.PreviewURLTemplate,
+		errorReason:        document.ErrorReason,
 	}
 	if sandbox.state == "" {
 		sandbox.state = StateStarting
@@ -507,7 +511,7 @@ func (c *Client) reclaimCreate(key string, body []byte) {
 			"Content-Type":    "application/json",
 			"Idempotency-Key": key,
 		},
-		mode: requestKeyed,
+		mode: requestSafe,
 	})
 	if err != nil {
 		return

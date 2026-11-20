@@ -236,7 +236,7 @@ type requestMode int
 
 const (
 	requestRead requestMode = iota
-	requestKeyed
+	requestSafe
 	requestExec
 )
 
@@ -257,14 +257,15 @@ type httpResponse struct {
 }
 
 var neverRetry = map[string]bool{
-	"sandbox_quota_exceeded":  true,
-	"sandboxes_disabled":      true,
-	"sandbox_create_disabled": true,
-	"sandbox_fork_disabled":   true,
-	"idempotency_conflict":    true,
-	"paid_balance_required":   true,
-	"insufficient_balance":    true,
-	"preview_unavailable":     true,
+	"sandbox_quota_exceeded":   true,
+	"sandboxes_disabled":       true,
+	"sandbox_create_disabled":  true,
+	"sandbox_fork_disabled":    true,
+	"idempotency_conflict":     true,
+	"paid_balance_required":    true,
+	"insufficient_balance":     true,
+	"preview_unavailable":      true,
+	"share_links_need_payment": true,
 }
 
 var execUndelivered = map[string]bool{
