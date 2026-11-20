@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,19 +15,27 @@ type testAPI struct {
 	t      *testing.T
 	server *httptest.Server
 
-	mu             sync.Mutex
-	creates        int
-	gets           int
-	execs          int
-	deletes        int
-	state          string
-	deleteStatus   int
-	getFailures    int
-	createHandler  http.HandlerFunc
-	execHandler    http.HandlerFunc
-	getHandler     http.HandlerFunc
-	createBody     map[string]any
-	idempotencyKey []string
+	mu                  sync.Mutex
+	creates             int
+	gets                int
+	execs               int
+	deletes             int
+	lists               int
+	templateGets        int
+	bulkDeletes         int
+	connects            int
+	state               string
+	deleteStatus        int
+	getFailures         int
+	createHandler       http.HandlerFunc
+	execHandler         http.HandlerFunc
+	getHandler          http.HandlerFunc
+	listHandler         http.HandlerFunc
+	templatesHandler    http.HandlerFunc
+	deleteLabelsHandler http.HandlerFunc
+	connectHandler      http.HandlerFunc
+	createBody          map[string]any
+	idempotencyKey      []string
 }
 
 func newTestAPI(t *testing.T) *testAPI {
@@ -71,6 +80,46 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeSandbox(w, http.StatusOK, state, a.server.URL)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sandboxes":
+		a.mu.Lock()
+		a.lists++
+		handler := a.listHandler
+		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sandboxes": []any{}})
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sandbox-templates":
+		a.mu.Lock()
+		a.templateGets++
+		handler := a.templatesHandler
+		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"templates": []any{}})
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/sandboxes/"):
+		a.mu.Lock()
+		a.connects++
+		handler := a.connectHandler
+		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/sandboxes":
+		a.mu.Lock()
+		a.bulkDeletes++
+		handler := a.deleteLabelsHandler
+		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"count": 0, "ids": []string{}, "more": false})
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/sandbox/sbx_1/process/execute":
 		a.mu.Lock()
 		a.execs++
@@ -123,6 +172,12 @@ func (a *testAPI) counts() (creates, gets, execs, deletes int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.creates, a.gets, a.execs, a.deletes
+}
+
+func (a *testAPI) discoveryCounts() (lists, templates, bulkDeletes, connects int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lists, a.templateGets, a.bulkDeletes, a.connects
 }
 
 func writeSandbox(w http.ResponseWriter, status int, state, base string) {
