@@ -20,6 +20,7 @@ type testAPI struct {
 	gets                int
 	execs               int
 	deletes             int
+	downloads           int
 	lists               int
 	templateGets        int
 	bulkDeletes         int
@@ -32,6 +33,7 @@ type testAPI struct {
 	createHandler       http.HandlerFunc
 	execHandler         http.HandlerFunc
 	getHandler          http.HandlerFunc
+	downloadHandler     http.HandlerFunc
 	listHandler         http.HandlerFunc
 	templatesHandler    http.HandlerFunc
 	deleteLabelsHandler http.HandlerFunc
@@ -138,6 +140,16 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "no exec handler", http.StatusInternalServerError)
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/sandbox/sbx_1/files/download":
+		a.mu.Lock()
+		a.downloads++
+		handler := a.downloadHandler
+		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		http.Error(w, "no download handler", http.StatusNotFound)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sandboxes/sbx_1/ports/3000/token":
 		a.mu.Lock()
 		a.tokenCalls++

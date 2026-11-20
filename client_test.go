@@ -55,6 +55,7 @@ func TestNewClientRejectsInvalidConfiguration(t *testing.T) {
 		{name: "negative retries", option: WithMaxRetries(-1), code: "invalid_argument"},
 		{name: "zero request timeout", option: WithRequestTimeout(0), code: "invalid_argument"},
 		{name: "zero poll interval", option: WithPollInterval(0), code: "invalid_argument"},
+		{name: "negative poll outage", option: WithPollOutage(-time.Second), code: "invalid_argument"},
 		{name: "nil HTTP client", option: WithHTTPClient(nil), code: "invalid_argument"},
 		{name: "space in key", option: WithAPIKey("two words"), code: "invalid_api_key"},
 	}
@@ -414,7 +415,7 @@ func TestCreateWithCallerKeyLeavesSandbox(t *testing.T) {
 
 	_, err := api.createSandbox(t, CreateSandboxOptions{
 		IdempotencyKey: "caller-key",
-		Timeout:        30 * time.Millisecond,
+		Timeout:        500 * time.Millisecond,
 	})
 	if err == nil {
 		t.Fatal("Create succeeded, want timeout")
