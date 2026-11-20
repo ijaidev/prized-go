@@ -27,6 +27,8 @@ type testAPI struct {
 	extends        int
 	timeouts       int
 	childDeletes   int
+	tokenCalls     int
+	publicCalls    int
 	state          string
 	deleteStatus   int
 	getFailures    int
@@ -39,10 +41,14 @@ type testAPI struct {
 	forkHandler    http.HandlerFunc
 	extendHandler  http.HandlerFunc
 	timeoutHandler http.HandlerFunc
+	tokenHandler   http.HandlerFunc
+	publicHandler  http.HandlerFunc
 	createBody     map[string]any
 	forkBody       map[string]any
 	extendBody     map[string]any
 	timeoutBody    map[string]any
+	tokenBody      map[string]any
+	publicBody     map[string]any
 	idempotencyKey []string
 	forkKey        string
 	extendKey      string
@@ -50,6 +56,8 @@ type testAPI struct {
 	childStates    map[string]string
 	childReasons   map[string]string
 }
+
+const testPreviewURLTemplate = "https://{port}-sbx.preview.prized.test/"
 
 func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
@@ -69,6 +77,10 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && path == "/api/v1/sandboxes":
 		a.handleCreate(w, r)
+	case r.Method == http.MethodPost && path == "/api/v1/sandboxes/sbx_1/ports/3000/token":
+		a.handlePortToken(w, r)
+	case r.Method == http.MethodPut && path == "/api/v1/sandboxes/sbx_1/ports/3000":
+		a.handlePortPublic(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/sandboxes/"):
 		a.handleGet(w, r, strings.TrimPrefix(path, "/api/v1/sandboxes/"))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/api/v1/sandboxes/"):
@@ -305,6 +317,38 @@ func (a *testAPI) handleTimeout(w http.ResponseWriter, r *http.Request, id strin
 	writeJSON(w, http.StatusOK, map[string]any{"sandbox": document, "capped": false})
 }
 
+func (a *testAPI) handlePortToken(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.tokenCalls++
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+		a.tokenBody = body
+	}
+	handler := a.tokenHandler
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	http.Error(w, "no token handler", http.StatusInternalServerError)
+}
+
+func (a *testAPI) handlePortPublic(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.publicCalls++
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+		a.publicBody = body
+	}
+	handler := a.publicHandler
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	http.Error(w, "no public handler", http.StatusInternalServerError)
+}
+
 func (a *testAPI) client(options ...Option) *Client {
 	a.t.Helper()
 	all := []Option{
@@ -345,10 +389,11 @@ func writeSandboxAt(w http.ResponseWriter, status int, id, state, reason, base s
 
 func sandboxFields(id, state, reason, base string) map[string]any {
 	document := map[string]any{
-		"id":          id,
-		"state":       state,
-		"template":    DefaultTemplate,
-		"toolboxBase": base + "/v1/sandbox/" + id,
+		"id":                 id,
+		"state":              state,
+		"template":           DefaultTemplate,
+		"toolboxBase":        base + "/v1/sandbox/" + id,
+		"previewUrlTemplate": testPreviewURLTemplate,
 	}
 	if reason != "" {
 		document["errorReason"] = reason

@@ -60,8 +60,8 @@ type ExtendOptions struct {
 // TimeoutOptions describes one exact run-time change. Pass exactly one of In
 // or At.
 type TimeoutOptions struct {
-	// In sets the deletion time to now plus this duration. It must be a whole
-	// number of minutes.
+	// In sets the deletion time to now plus this duration, measured when the
+	// call starts. It must be a whole number of minutes.
 	In time.Duration
 	// At sets the deletion time exactly. It must be in the future.
 	At time.Time
@@ -115,7 +115,7 @@ func (s *Sandbox) KeepAlive(ctx context.Context) error {
 	_, err := s.client.do(ctx, requestSpec{
 		method:    http.MethodPost,
 		url:       s.client.apiURL("/sandboxes/" + url.PathEscape(s.ID()) + "/refresh"),
-		mode:      requestKeyed,
+		mode:      requestSafe,
 		sandboxID: s.ID(),
 	})
 	return err
@@ -148,7 +148,7 @@ func (s *Sandbox) Pause(ctx context.Context, options *PauseOptions) error {
 	response, err := s.client.do(callCtx, requestSpec{
 		method:    http.MethodPost,
 		url:       s.client.apiURL("/sandboxes/" + url.PathEscape(s.ID()) + "/pause"),
-		mode:      requestKeyed,
+		mode:      requestSafe,
 		sandboxID: s.ID(),
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func (s *Sandbox) Resume(ctx context.Context, options *ResumeOptions) error {
 	response, err := s.client.do(callCtx, requestSpec{
 		method:    http.MethodPost,
 		url:       s.client.apiURL("/sandboxes/" + url.PathEscape(s.ID()) + "/resume"),
-		mode:      requestKeyed,
+		mode:      requestSafe,
 		sandboxID: s.ID(),
 	})
 	if err != nil {
@@ -270,7 +270,7 @@ func (s *Sandbox) Fork(ctx context.Context, options *ForkOptions) ([]*Sandbox, e
 		}
 		return nil, err
 	}
-	documents, parseErr := parseForkDocuments(response.status, response.body)
+	documents, parseErr := parseForkDocuments(response.status, s.ID(), response.body)
 	if parseErr != nil {
 		if generatedKey {
 			s.client.reclaimFork(s.ID(), body, key)
@@ -344,20 +344,18 @@ func (s *Sandbox) SetTimeout(ctx context.Context, options TimeoutOptions) (RunTi
 		return RunTime{}, newError("invalid_argument", "pass exactly one of In or At")
 	}
 
-	body := make(map[string]any, 1)
+	at := options.At.UTC()
 	if hasIn {
-		minutes, err := wholeMinutes("In", options.In)
-		if err != nil {
+		if _, err := wholeMinutes("In", options.In); err != nil {
 			return RunTime{}, err
 		}
-		body["inMin"] = minutes
-	} else {
-		if !options.At.After(time.Now()) {
-			return RunTime{}, newError("invalid_argument", "At must be in the future")
-		}
-		body["expiresAt"] = options.At.UTC()
+		// Resolve the moment once, at the call: a retry after a lost answer
+		// then sets the same deletion time instead of moving it later.
+		at = time.Now().Add(options.In).UTC()
+	} else if !options.At.After(time.Now()) {
+		return RunTime{}, newError("invalid_argument", "At must be in the future")
 	}
-	encoded, err := json.Marshal(body)
+	encoded, err := json.Marshal(map[string]any{"expiresAt": at})
 	if err != nil {
 		return RunTime{}, &Error{Code: "internal_error", Message: "could not encode the timeout request", cause: err}
 	}
@@ -442,7 +440,7 @@ func (c *Client) forkRequest(ctx context.Context, parentID string, body []byte, 
 			"Content-Type":    "application/json",
 			"Idempotency-Key": key,
 		},
-		mode:      requestKeyed,
+		mode:      requestSafe,
 		sandboxID: parentID,
 	})
 }
@@ -457,7 +455,7 @@ func (c *Client) lifecycleRequest(ctx context.Context, sandboxID, verb string, b
 		url:       c.apiURL("/sandboxes/" + url.PathEscape(sandboxID) + "/" + verb),
 		body:      body,
 		headers:   headers,
-		mode:      requestKeyed,
+		mode:      requestSafe,
 		sandboxID: sandboxID,
 	})
 }
@@ -548,25 +546,27 @@ func forkFailure(copies []*Sandbox) error {
 	return asRan(&Error{Code: "sandbox_error", SandboxID: cause.ID()})
 }
 
-func parseForkDocuments(status int, body []byte) ([]*sandboxDocument, error) {
+func parseForkDocuments(status int, parentID string, body []byte) ([]*sandboxDocument, error) {
 	var envelope struct {
 		Sandboxes []*sandboxDocument `json:"sandboxes"`
 	}
 	if len(body) == 0 || json.Unmarshal(body, &envelope) != nil || envelope.Sandboxes == nil {
 		return nil, &Error{
-			Code:    "bad_response",
-			Status:  status,
-			Message: "the API answered without the fork's copies",
-			Effect:  EffectRan,
+			Code:      "bad_response",
+			Status:    status,
+			Message:   "the API answered without the fork's copies",
+			SandboxID: parentID,
+			Effect:    EffectRan,
 		}
 	}
 	for _, document := range envelope.Sandboxes {
 		if document == nil || document.ID == "" {
 			return nil, &Error{
-				Code:    "bad_response",
-				Status:  status,
-				Message: "the fork answer carried a copy without an id",
-				Effect:  EffectRan,
+				Code:      "bad_response",
+				Status:    status,
+				Message:   "the fork answer carried a copy without an id",
+				SandboxID: parentID,
+				Effect:    EffectRan,
 			}
 		}
 		if document.State == "" {
@@ -583,7 +583,7 @@ func (c *Client) reclaimFork(parentID string, body []byte, key string) {
 	if err != nil {
 		return
 	}
-	documents, parseErr := parseForkDocuments(response.status, response.body)
+	documents, parseErr := parseForkDocuments(response.status, parentID, response.body)
 	if parseErr != nil {
 		return
 	}

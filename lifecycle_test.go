@@ -65,11 +65,34 @@ func TestPauseWaitTimesOut(t *testing.T) {
 	api.pauseHandler = func(w http.ResponseWriter, _ *http.Request) {
 		writeSandbox(w, http.StatusAccepted, StatePausing, api.server.URL)
 	}
+	polled := make(chan struct{})
+	release := make(chan struct{})
+	api.getHandler = func(http.ResponseWriter, *http.Request) {
+		close(polled)
+		<-release
+	}
+	defer close(release)
 
-	err = sandbox.Pause(context.Background(), &PauseOptions{Timeout: 30 * time.Millisecond})
+	// The parent has no deadline of its own; closing its Done channel during
+	// the first poll forces the wait timeout after the pause was accepted.
+	ctx := &manualDeadlineContext{Context: context.Background(), done: make(chan struct{})}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-polled:
+			close(ctx.done)
+		case <-stop:
+		}
+	}()
+
+	err = sandbox.Pause(ctx, &PauseOptions{Timeout: 10 * time.Second})
 	var failure *Error
 	if !errors.As(err, &failure) || failure.Code != "timeout" {
 		t.Fatalf("error = %v, want timeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error does not wrap context.DeadlineExceeded: %v", err)
 	}
 	if failure.Effect != EffectRan {
 		t.Fatalf("effect = %s, want ran", failure.Effect)
@@ -326,6 +349,26 @@ func TestForkCapacityReportsFits(t *testing.T) {
 	}
 }
 
+func TestForkMalformedAnswerNamesParent(t *testing.T) {
+	api := newTestAPI(t)
+	parent, err := api.createSandbox(t, CreateSandboxOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	api.forkHandler = func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"fork": map[string]any{"id": "frk_1"}})
+	}
+
+	_, err = parent.Fork(context.Background(), &ForkOptions{Count: 1, IdempotencyKey: "caller-key"})
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "bad_response" {
+		t.Fatalf("error = %v, want bad_response", err)
+	}
+	if failure.SandboxID != "sbx_1" {
+		t.Fatalf("sandbox id = %q, want sbx_1", failure.SandboxID)
+	}
+}
+
 func TestForkRejectsInvalidCount(t *testing.T) {
 	api := newTestAPI(t)
 	parent, err := api.createSandbox(t, CreateSandboxOptions{})
@@ -399,7 +442,7 @@ func TestSetTimeoutSetsExactTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	at := time.Date(2026, 11, 22, 9, 30, 0, 0, time.UTC)
+	at := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
 	runTime, err := sandbox.SetTimeout(context.Background(), TimeoutOptions{At: at})
 	if err != nil {
 		t.Fatalf("SetTimeout: %v", err)
@@ -416,22 +459,71 @@ func TestSetTimeoutSetsExactTime(t *testing.T) {
 	}
 }
 
-func TestSetTimeoutInMinutes(t *testing.T) {
+func TestSetTimeoutInSendsExactTime(t *testing.T) {
 	api := newTestAPI(t)
 	sandbox, err := api.createSandbox(t, CreateSandboxOptions{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	before := time.Now()
 	if _, err := sandbox.SetTimeout(context.Background(), TimeoutOptions{In: 30 * time.Minute}); err != nil {
+		t.Fatalf("SetTimeout: %v", err)
+	}
+	after := time.Now()
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if _, ok := api.timeoutBody["inMin"]; ok {
+		t.Fatalf("body = %#v, want an absolute expiresAt", api.timeoutBody)
+	}
+	value, _ := api.timeoutBody["expiresAt"].(string)
+	parsed, parseErr := time.Parse(time.RFC3339Nano, value)
+	if parseErr != nil {
+		t.Fatalf("expiresAt = %q: %v", value, parseErr)
+	}
+	earliest := before.Add(30 * time.Minute)
+	latest := after.Add(30 * time.Minute)
+	if parsed.Before(earliest) || parsed.After(latest) {
+		t.Fatalf("expiresAt = %s, want between %s and %s", parsed, earliest, latest)
+	}
+}
+
+func TestSetTimeoutRetryKeepsExactTime(t *testing.T) {
+	api := newTestAPI(t)
+	sandbox, err := api.createSandbox(t, CreateSandboxOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var sent []string
+	api.timeoutHandler = func(w http.ResponseWriter, _ *http.Request) {
+		api.mu.Lock()
+		value, _ := api.timeoutBody["expiresAt"].(string)
+		sent = append(sent, value)
+		calls := len(sent)
+		api.mu.Unlock()
+		if calls == 1 {
+			writeError(w, http.StatusBadGateway, "bad_gateway", "the answer was lost")
+			return
+		}
+		document := sandboxFields("sbx_1", StateRunning, "", api.server.URL)
+		document["expiresAt"] = value
+		writeJSON(w, http.StatusOK, map[string]any{"sandbox": document, "capped": false})
+	}
+
+	runTime, err := sandbox.SetTimeout(context.Background(), TimeoutOptions{In: 30 * time.Minute})
+	if err != nil {
 		t.Fatalf("SetTimeout: %v", err)
 	}
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if minutes, _ := api.timeoutBody["inMin"].(float64); minutes != 30 {
-		t.Fatalf("inMin = %v, want 30", api.timeoutBody["inMin"])
+	if len(sent) != 2 {
+		t.Fatalf("requests = %d, want 2", len(sent))
 	}
-	if _, ok := api.timeoutBody["expiresAt"]; ok {
-		t.Fatalf("body = %#v, want only inMin", api.timeoutBody)
+	if sent[0] != sent[1] {
+		t.Fatalf("retry moved the time: %q then %q", sent[0], sent[1])
+	}
+	parsed, parseErr := time.Parse(time.RFC3339Nano, sent[0])
+	if parseErr != nil || !runTime.ExpiresAt.Equal(parsed) {
+		t.Fatalf("result = %s, sent %q", runTime.ExpiresAt, sent[0])
 	}
 }
 
