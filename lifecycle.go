@@ -286,7 +286,7 @@ func (s *Sandbox) Fork(ctx context.Context, options *ForkOptions) ([]*Sandbox, e
 	}
 	if err := s.settleFork(callCtx, copies); err != nil {
 		if generatedKey {
-			s.client.deleteCopiesBestEffort(sandboxIDs(copies))
+			s.client.deleteCopiesBestEffort(sandboxCopyIDs(copies))
 		}
 		return nil, err
 	}
@@ -405,7 +405,8 @@ func (s *Sandbox) applyRunTime(response *httpResponse) (RunTime, error) {
 	if parseErr != nil {
 		return RunTime{}, parseErr
 	}
-	if document.ExpiresAt == nil {
+	expiresAt := parseAPITime(document.ExpiresAt)
+	if expiresAt.IsZero() {
 		return RunTime{}, &Error{
 			Code:      "bad_response",
 			Status:    response.status,
@@ -418,7 +419,7 @@ func (s *Sandbox) applyRunTime(response *httpResponse) (RunTime, error) {
 		_ = json.Unmarshal(response.body, &envelope)
 	}
 	s.applyDocument(document)
-	return RunTime{ExpiresAt: *document.ExpiresAt, Capped: envelope.Capped}, nil
+	return RunTime{ExpiresAt: s.ExpiresAt(), Capped: envelope.Capped}, nil
 }
 
 func wholeMinutes(name string, value time.Duration) (int64, error) {
@@ -547,10 +548,8 @@ func forkFailure(copies []*Sandbox) error {
 }
 
 func parseForkDocuments(status int, parentID string, body []byte) ([]*sandboxDocument, error) {
-	var envelope struct {
-		Sandboxes []*sandboxDocument `json:"sandboxes"`
-	}
-	if len(body) == 0 || json.Unmarshal(body, &envelope) != nil || envelope.Sandboxes == nil {
+	documents, err := parseSandboxList(status, body)
+	if err != nil {
 		return nil, &Error{
 			Code:      "bad_response",
 			Status:    status,
@@ -559,21 +558,7 @@ func parseForkDocuments(status int, parentID string, body []byte) ([]*sandboxDoc
 			Effect:    EffectRan,
 		}
 	}
-	for _, document := range envelope.Sandboxes {
-		if document == nil || document.ID == "" {
-			return nil, &Error{
-				Code:      "bad_response",
-				Status:    status,
-				Message:   "the fork answer carried a copy without an id",
-				SandboxID: parentID,
-				Effect:    EffectRan,
-			}
-		}
-		if document.State == "" {
-			document.State = StateStarting
-		}
-	}
-	return envelope.Sandboxes, nil
+	return documents, nil
 }
 
 func (c *Client) reclaimFork(parentID string, body []byte, key string) {
@@ -612,7 +597,7 @@ func (c *Client) deleteCopiesBestEffort(ids []string) {
 	}
 }
 
-func sandboxIDs(copies []*Sandbox) []string {
+func sandboxCopyIDs(copies []*Sandbox) []string {
 	ids := make([]string, 0, len(copies))
 	for _, copy := range copies {
 		ids = append(ids, copy.ID())

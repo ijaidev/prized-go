@@ -37,6 +37,9 @@ const (
 	DefaultDeleteTimeout = 120 * time.Second
 	// DefaultPauseTimeout bounds a pause and its wait for paused.
 	DefaultPauseTimeout = 120 * time.Second
+	// DefaultCallTimeout bounds connect, list, templates and delete by labels
+	// when the caller's context names no deadline.
+	DefaultCallTimeout = 120 * time.Second
 	// DefaultExecTimeout bounds a command when the call names none.
 	DefaultExecTimeout = 60 * time.Second
 )
@@ -240,6 +243,9 @@ const (
 	requestRead requestMode = iota
 	requestSafe
 	requestExec
+	// requestBulkDelete is a mutation that selects its targets again on every
+	// request, so it is sent again only when it provably never arrived.
+	requestBulkDelete
 )
 
 type requestSpec struct {
@@ -400,8 +406,14 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*httpResponse, error
 		}
 
 		failure := errorFromResponse(response.StatusCode, body, response.Header, spec.sandboxID)
-		if response.StatusCode >= 500 && spec.mode != requestRead {
-			if !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
+		if response.StatusCode >= 500 {
+			if spec.mode == requestBulkDelete {
+				// A gateway error may come after the delete ran. Refusals
+				// known to happen before anything changes stay not_run.
+				if !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
+					failure.Effect = EffectMaybeRan
+				}
+			} else if spec.mode != requestRead && !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
 				failure.Effect = EffectMaybeRan
 			}
 		}
@@ -425,6 +437,14 @@ func mergeEffect(failure *Error, acted Effect) *Error {
 func (c *Client) retryable(mode requestMode, method string, failure *Error) bool {
 	if neverRetry[failure.Code] {
 		return false
+	}
+	if mode == requestBulkDelete {
+		// The selector is live: resending after a lost answer could delete
+		// sandboxes created since the first request.
+		if failure.Status == 0 {
+			return failure.notSent
+		}
+		return failure.Status == http.StatusTooManyRequests
 	}
 	if failure.Status == 0 {
 		if mode == requestExec {

@@ -15,46 +15,54 @@ type testAPI struct {
 	t      *testing.T
 	server *httptest.Server
 
-	mu             sync.Mutex
-	creates        int
-	gets           int
-	execs          int
-	deletes        int
-	pauses         int
-	resumes        int
-	refreshes      int
-	forks          int
-	extends        int
-	timeouts       int
-	childDeletes   int
-	tokenCalls     int
-	publicCalls    int
-	state          string
-	deleteStatus   int
-	getFailures    int
-	createHandler  http.HandlerFunc
-	execHandler    http.HandlerFunc
-	getHandler     http.HandlerFunc
-	pauseHandler   http.HandlerFunc
-	resumeHandler  http.HandlerFunc
-	refreshHandler http.HandlerFunc
-	forkHandler    http.HandlerFunc
-	extendHandler  http.HandlerFunc
-	timeoutHandler http.HandlerFunc
-	tokenHandler   http.HandlerFunc
-	publicHandler  http.HandlerFunc
-	createBody     map[string]any
-	forkBody       map[string]any
-	extendBody     map[string]any
-	timeoutBody    map[string]any
-	tokenBody      map[string]any
-	publicBody     map[string]any
-	idempotencyKey []string
-	forkKey        string
-	extendKey      string
-	timeoutKey     string
-	childStates    map[string]string
-	childReasons   map[string]string
+	mu                  sync.Mutex
+	creates             int
+	gets                int
+	execs               int
+	deletes             int
+	pauses              int
+	resumes             int
+	refreshes           int
+	forks               int
+	extends             int
+	timeouts            int
+	childDeletes        int
+	lists               int
+	templateGets        int
+	bulkDeletes         int
+	connects            int
+	tokenCalls          int
+	publicCalls         int
+	state               string
+	deleteStatus        int
+	getFailures         int
+	createHandler       http.HandlerFunc
+	execHandler         http.HandlerFunc
+	getHandler          http.HandlerFunc
+	pauseHandler        http.HandlerFunc
+	resumeHandler       http.HandlerFunc
+	refreshHandler      http.HandlerFunc
+	forkHandler         http.HandlerFunc
+	extendHandler       http.HandlerFunc
+	timeoutHandler      http.HandlerFunc
+	listHandler         http.HandlerFunc
+	templatesHandler    http.HandlerFunc
+	deleteLabelsHandler http.HandlerFunc
+	connectHandler      http.HandlerFunc
+	tokenHandler        http.HandlerFunc
+	publicHandler       http.HandlerFunc
+	createBody          map[string]any
+	forkBody            map[string]any
+	extendBody          map[string]any
+	timeoutBody         map[string]any
+	tokenBody           map[string]any
+	publicBody          map[string]any
+	idempotencyKey      []string
+	forkKey             string
+	extendKey           string
+	timeoutKey          string
+	childStates         map[string]string
+	childReasons        map[string]string
 }
 
 const testPreviewURLTemplate = "https://{port}-sbx.preview.prized.test/"
@@ -77,14 +85,22 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && path == "/api/v1/sandboxes":
 		a.handleCreate(w, r)
+	case r.Method == http.MethodGet && path == "/api/v1/sandboxes":
+		a.handleList(w, r)
+	case r.Method == http.MethodGet && path == "/api/v1/sandbox-templates":
+		a.handleTemplates(w, r)
+	case r.Method == http.MethodGet && path == "/api/v1/sandboxes/sbx_1":
+		a.handleGet(w, r, "sbx_1")
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/sandboxes/"):
+		a.handleConnect(w, r, strings.TrimPrefix(path, "/api/v1/sandboxes/"))
+	case r.Method == http.MethodDelete && path == "/api/v1/sandboxes":
+		a.handleBulkDelete(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/api/v1/sandboxes/"):
+		a.handleDelete(w, strings.TrimPrefix(path, "/api/v1/sandboxes/"))
 	case r.Method == http.MethodPost && path == "/api/v1/sandboxes/sbx_1/ports/3000/token":
 		a.handlePortToken(w, r)
 	case r.Method == http.MethodPut && path == "/api/v1/sandboxes/sbx_1/ports/3000":
 		a.handlePortPublic(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/sandboxes/"):
-		a.handleGet(w, r, strings.TrimPrefix(path, "/api/v1/sandboxes/"))
-	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/api/v1/sandboxes/"):
-		a.handleDelete(w, strings.TrimPrefix(path, "/api/v1/sandboxes/"))
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/sandboxes/"):
 		id, verb, found := strings.Cut(strings.TrimPrefix(path, "/api/v1/sandboxes/"), "/")
 		if !found {
@@ -124,6 +140,42 @@ func (a *testAPI) handleCreate(w http.ResponseWriter, r *http.Request) {
 	writeSandbox(w, http.StatusCreated, StateStarting, a.server.URL)
 }
 
+func (a *testAPI) handleList(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.lists++
+	handler := a.listHandler
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sandboxes": []any{}})
+}
+
+func (a *testAPI) handleTemplates(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.templateGets++
+	handler := a.templatesHandler
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"templates": []any{}})
+}
+
+func (a *testAPI) handleBulkDelete(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.bulkDeletes++
+	handler := a.deleteLabelsHandler
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"count": 0, "ids": []string{}, "more": false})
+}
+
 func (a *testAPI) handleGet(w http.ResponseWriter, r *http.Request, id string) {
 	a.mu.Lock()
 	a.gets++
@@ -140,15 +192,30 @@ func (a *testAPI) handleGet(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	state := a.state
-	reason := ""
-	if id != "sbx_1" {
-		state = a.childStates[id]
-		if state == StateStarting {
-			// A fork copy boots between the fork answer and the first read.
-			state = StateRunning
-			a.childStates[id] = StateRunning
-		}
-		reason = a.childReasons[id]
+	a.mu.Unlock()
+	if state == "" {
+		writeError(w, http.StatusNotFound, "not_found", "no such sandbox")
+		return
+	}
+	writeSandboxAt(w, http.StatusOK, id, state, "", a.server.URL)
+}
+
+func (a *testAPI) handleConnect(w http.ResponseWriter, r *http.Request, id string) {
+	a.mu.Lock()
+	a.connects++
+	handler := a.connectHandler
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	a.mu.Lock()
+	state := a.childStates[id]
+	reason := a.childReasons[id]
+	if state == StateStarting {
+		// A fork copy boots between the fork answer and the first read.
+		state = StateRunning
+		a.childStates[id] = StateRunning
 	}
 	a.mu.Unlock()
 	if state == "" {
@@ -377,6 +444,12 @@ func (a *testAPI) counts() (creates, gets, execs, deletes int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.creates, a.gets, a.execs, a.deletes
+}
+
+func (a *testAPI) discoveryCounts() (lists, templates, bulkDeletes, connects int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lists, a.templateGets, a.bulkDeletes, a.connects
 }
 
 func writeSandbox(w http.ResponseWriter, status int, state, base string) {
