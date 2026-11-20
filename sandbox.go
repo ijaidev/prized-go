@@ -330,27 +330,27 @@ func (s *Sandbox) waitFor(ctx context.Context, want string) error {
 			if reason != "" {
 				message = "the sandbox failed: " + reason
 			}
-			return &Error{Code: "sandbox_error", Message: message, Reason: reason, SandboxID: s.ID()}
+			return asRan(&Error{Code: "sandbox_error", Message: message, Reason: reason, SandboxID: s.ID()})
 		case StateDeleted:
 			if want == StateDeleted {
 				return nil
 			}
-			return &Error{Code: "sandbox_deleted", SandboxID: s.ID()}
+			return asRan(&Error{Code: "sandbox_deleted", SandboxID: s.ID()})
 		case StateDeleting:
 			if want != StateDeleted {
-				return &Error{Code: "sandbox_deleted", SandboxID: s.ID()}
+				return asRan(&Error{Code: "sandbox_deleted", SandboxID: s.ID()})
 			}
 		}
 
 		gone, err := s.read(ctx)
 		if err != nil {
-			return err
+			return asRan(err)
 		}
 		if gone {
 			if want == StateDeleted {
 				return nil
 			}
-			return &Error{Code: "sandbox_deleted", SandboxID: s.ID()}
+			return asRan(&Error{Code: "sandbox_deleted", SandboxID: s.ID()})
 		}
 		if s.State() == want {
 			return nil
@@ -360,10 +360,20 @@ func (s *Sandbox) waitFor(ctx context.Context, want string) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return contextError(ctx.Err(), s.ID(), EffectNotRun)
+			return asRan(contextError(ctx.Err(), s.ID(), EffectNotRun))
 		case <-timer.C:
 		}
 	}
+}
+
+// asRan marks a wait's failure as one whose create or delete was already
+// accepted by the API, whatever happened to the wait.
+func asRan(err error) error {
+	var failure *Error
+	if errors.As(err, &failure) && failure.Effect < EffectRan {
+		failure.Effect = EffectRan
+	}
+	return err
 }
 
 func (s *Sandbox) read(ctx context.Context) (bool, error) {

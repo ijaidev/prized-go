@@ -210,6 +210,9 @@ func normalizeOrigin(name, raw string) (string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", newError("invalid_argument", name+" must be an http(s) URL")
 	}
+	if parsed.Hostname() == "" {
+		return "", newError("invalid_argument", name+" must name a host")
+	}
 	if parsed.Scheme == "http" && !isLoopback(parsed.Hostname()) {
 		return "", newError("invalid_argument", name+" must use https (plain http only for localhost, 127.0.0.1 or [::1])")
 	}

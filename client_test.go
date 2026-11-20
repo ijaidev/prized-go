@@ -51,6 +51,7 @@ func TestNewClientRejectsInvalidConfiguration(t *testing.T) {
 	}{
 		{name: "insecure base URL", option: WithBaseURL("http://example.com"), code: "invalid_argument"},
 		{name: "bad base URL", option: WithBaseURL("://nope"), code: "invalid_argument"},
+		{name: "missing host", option: WithBaseURL("https://"), code: "invalid_argument"},
 		{name: "negative retries", option: WithMaxRetries(-1), code: "invalid_argument"},
 		{name: "zero request timeout", option: WithRequestTimeout(0), code: "invalid_argument"},
 		{name: "zero poll interval", option: WithPollInterval(0), code: "invalid_argument"},
@@ -270,6 +271,9 @@ func TestCreateFailedWaitDeletesSandbox(t *testing.T) {
 	if failure.SandboxID != "sbx_1" {
 		t.Fatalf("sandbox id = %q", failure.SandboxID)
 	}
+	if failure.Effect != EffectRan {
+		t.Fatalf("effect = %s, want ran", failure.Effect)
+	}
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	if api.deletes != 1 {
@@ -288,6 +292,9 @@ func TestCreateTimeoutDeletesSandbox(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error does not wrap context.DeadlineExceeded: %v", err)
+	}
+	if failure.Effect != EffectRan {
+		t.Fatalf("effect = %s, want ran", failure.Effect)
 	}
 	api.mu.Lock()
 	defer api.mu.Unlock()
@@ -335,6 +342,10 @@ func TestCreateCancellationDeletesSandbox(t *testing.T) {
 	_, err := client.Sandboxes().Create(ctx, CreateSandboxOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Effect != EffectRan {
+		t.Fatalf("effect = %v, want ran", err)
 	}
 	api.mu.Lock()
 	defer api.mu.Unlock()
