@@ -316,6 +316,30 @@ func TestListFiltersDeletedStatesAndLabels(t *testing.T) {
 	}
 }
 
+func TestListRequiresAnAbsentLabelEvenWhenItsValueIsEmpty(t *testing.T) {
+	api := newTestAPI(t)
+	api.listHandler = func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sandboxes": []any{
+				discoverySandbox("sbx_without", StateRunning, map[string]string{"other": "x"}),
+				discoverySandbox("sbx_with", StateRunning, map[string]string{"bad=key": ""}),
+			},
+		})
+	}
+
+	// A key with "=" cannot be sent in the selector, so this list filters
+	// locally. A missing key must not read as an empty value.
+	found, err := api.client().Sandboxes().List(context.Background(), ListSandboxesOptions{
+		Labels: map[string]string{"bad=key": ""},
+	})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got := sandboxIDs(found); !reflect.DeepEqual(got, []string{"sbx_with"}) {
+		t.Fatalf("ids = %#v, want [sbx_with]", got)
+	}
+}
+
 func TestTemplatesExposeDefaultsAndBounds(t *testing.T) {
 	api := newTestAPI(t)
 	api.templatesHandler = func(w http.ResponseWriter, _ *http.Request) {

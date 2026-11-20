@@ -315,7 +315,8 @@ func utf16Length(text string) int {
 
 func labelsMatch(have, want map[string]string) bool {
 	for key, value := range want {
-		if have[key] != value {
+		got, ok := have[key]
+		if !ok || got != value {
 			return false
 		}
 	}
