@@ -70,27 +70,12 @@ type CreateSandboxOptions struct {
 	Timeout time.Duration
 }
 
-// ExecOptions describes one foreground command.
-type ExecOptions struct {
-	// Timeout bounds the command; DefaultExecTimeout when zero.
-	Timeout time.Duration
-}
-
 // DeleteOptions describes one delete.
 type DeleteOptions struct {
 	// Wait also waits until the sandbox is gone.
 	Wait bool
 	// Timeout bounds the request, its retries and the optional wait.
 	Timeout time.Duration
-}
-
-// ExecResult is one finished command.
-type ExecResult struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
-	Duration time.Duration
-	TimedOut bool
 }
 
 // Sandbox is a handle to one sandbox.
@@ -366,86 +351,6 @@ func (s *Sandboxes) Create(ctx context.Context, options CreateSandboxOptions) (*
 		return nil, err
 	}
 	return sandbox, nil
-}
-
-// Exec runs one foreground command and returns its output. A non-zero exit
-// code is a result, not an error.
-func (s *Sandbox) Exec(ctx context.Context, command string, options *ExecOptions) (*ExecResult, error) {
-	if s.isClosed() {
-		return nil, closedError()
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if strings.TrimSpace(command) == "" {
-		return nil, newError("invalid_argument", "the command is empty")
-	}
-	timeout := DefaultExecTimeout
-	if options != nil {
-		if options.Timeout < 0 {
-			return nil, newError("invalid_argument", "timeout must be greater than zero")
-		}
-		if options.Timeout > 0 {
-			timeout = options.Timeout
-		}
-	}
-
-	base, err := s.client.toolboxBaseFor(s.ID(), s.toolboxBaseValue())
-	if err != nil {
-		return nil, err
-	}
-	body, err := json.Marshal(struct {
-		Command string  `json:"command"`
-		Timeout float64 `json:"timeout"`
-	}{
-		Command: command,
-		Timeout: timeout.Seconds(),
-	})
-	if err != nil {
-		return nil, &Error{Code: "internal_error", Message: "could not encode the command request", cause: err}
-	}
-
-	response, err := s.client.do(ctx, requestSpec{
-		method:         http.MethodPost,
-		url:            base + "/process/execute",
-		body:           body,
-		headers:        map[string]string{"Content-Type": "application/json"},
-		mode:           requestExec,
-		sandboxID:      s.ID(),
-		attemptTimeout: timeout + 30*time.Second,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var document struct {
-		Stdout     string   `json:"stdout"`
-		Stderr     string   `json:"stderr"`
-		ExitCode   *int     `json:"exitCode"`
-		DurationMS *float64 `json:"durationMs"`
-		TimedOut   bool     `json:"timedOut"`
-	}
-	if err := json.Unmarshal(response.body, &document); err != nil || document.ExitCode == nil {
-		return nil, &Error{
-			Code:      "bad_response",
-			Status:    response.status,
-			Message:   "the exec answer carried no exit code",
-			SandboxID: s.ID(),
-			Effect:    EffectRan,
-			cause:     err,
-		}
-	}
-	duration := time.Duration(0)
-	if document.DurationMS != nil {
-		duration = time.Duration(*document.DurationMS * float64(time.Millisecond))
-	}
-	return &ExecResult{
-		Stdout:   document.Stdout,
-		Stderr:   document.Stderr,
-		ExitCode: *document.ExitCode,
-		Duration: duration,
-		TimedOut: document.TimedOut,
-	}, nil
 }
 
 // Delete deletes the sandbox. It returns once the API accepts; Wait also

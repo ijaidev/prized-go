@@ -4,6 +4,7 @@ package prized
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -45,6 +46,73 @@ func TestLiveTracer(t *testing.T) {
 	}
 	if strings.TrimSpace(result.Stdout) != "42" {
 		t.Fatalf("stdout = %q", result.Stdout)
+	}
+}
+
+func TestLiveCommands(t *testing.T) {
+	if os.Getenv("PRIZED_API_KEY") == "" {
+		t.Skip("PRIZED_API_KEY is not set")
+	}
+	client, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	sandbox, err := client.Sandboxes().Create(ctx, CreateSandboxOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() {
+		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer deleteCancel()
+		if err := sandbox.Delete(deleteCtx, &DeleteOptions{Wait: true}); err != nil {
+			t.Errorf("Delete: %v", err)
+		}
+	}()
+
+	var streamed strings.Builder
+	result, err := sandbox.Exec(ctx, `for i in 1 2 3; do echo line$i; sleep 0.2; done`, &ExecOptions{
+		Timeout: 2 * time.Minute,
+		Stdout:  &streamed,
+	})
+	if err != nil {
+		t.Fatalf("streamed Exec: %v", err)
+	}
+	if result.ExitCode != 0 || !strings.Contains(result.Stdout, "line3") {
+		t.Fatalf("streamed result = %#v", result)
+	}
+	if streamed.String() != result.Stdout {
+		t.Fatalf("streamed chunks = %q, result = %q", streamed.String(), result.Stdout)
+	}
+
+	handle, err := sandbox.Start(ctx, `python3 -m http.server 38173`, nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	status, err := handle.Status(ctx)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.Running {
+		t.Fatalf("background server is not running: %#v", status)
+	}
+	killed, err := handle.Kill(ctx, "SIGTERM")
+	if err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if !killed {
+		t.Fatal("Kill reported that the server had already ended")
+	}
+	if _, err := handle.Wait(ctx, nil); err != nil {
+		var timeout *CommandTimeoutError
+		if !errors.As(err, &timeout) {
+			t.Fatalf("background server Wait: %v", err)
+		}
+	}
+	if err := handle.Cleanup(ctx); err != nil {
+		t.Fatalf("background server Cleanup: %v", err)
 	}
 }
 

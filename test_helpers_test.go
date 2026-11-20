@@ -27,6 +27,7 @@ type testAPI struct {
 	extends             int
 	timeouts            int
 	childDeletes        int
+	downloads           int
 	lists               int
 	templateGets        int
 	bulkDeletes         int
@@ -45,6 +46,7 @@ type testAPI struct {
 	forkHandler         http.HandlerFunc
 	extendHandler       http.HandlerFunc
 	timeoutHandler      http.HandlerFunc
+	downloadHandler     http.HandlerFunc
 	listHandler         http.HandlerFunc
 	templatesHandler    http.HandlerFunc
 	deleteLabelsHandler http.HandlerFunc
@@ -118,6 +120,16 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "no exec handler", http.StatusInternalServerError)
+	case r.Method == http.MethodGet && path == "/v1/sandbox/sbx_1/files/download":
+		a.mu.Lock()
+		a.downloads++
+		handler := a.downloadHandler
+		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		http.Error(w, "no download handler", http.StatusNotFound)
 	default:
 		http.NotFound(w, r)
 	}

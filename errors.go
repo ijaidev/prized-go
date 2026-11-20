@@ -41,6 +41,7 @@ func (e Effect) String() string {
 // missing_api_key, network_error, timeout, canceled, bad_response, or
 // handle_closed. Body is the decoded error document when the answer carried
 // one. Effect classifies whether the operation ran before the failure.
+// ExitCode is the command's exit code when the failure came after it ran.
 type Error struct {
 	Code       string
 	Status     int
@@ -50,6 +51,7 @@ type Error struct {
 	Body       map[string]any
 	RetryAfter time.Duration
 	Effect     Effect
+	ExitCode   *int
 
 	cause   error
 	notSent bool
@@ -84,6 +86,97 @@ func (e *Error) Unwrap() error {
 
 // ErrHandleClosed is returned by a Sandbox method called after Close.
 var ErrHandleClosed = errors.New("prized: sandbox handle is closed")
+
+// CommandTimeoutError is a command that ran past its timeout and was killed.
+// Result carries what it printed before, with exit code -1 and TimedOut true;
+// the caller can read either the typed error or the returned result.
+type CommandTimeoutError struct {
+	// Err is the typed failure: code command_timeout, effect ran.
+	Err *Error
+	// Result is the partial result.
+	Result *ExecResult
+	// Timeout is the limit that was exceeded.
+	Timeout time.Duration
+}
+
+// Error returns the failure as a sentence.
+func (e *CommandTimeoutError) Error() string {
+	if e == nil || e.Err == nil {
+		return "prized: command_timeout"
+	}
+	return e.Err.Error()
+}
+
+// Unwrap exposes the typed failure.
+func (e *CommandTimeoutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// OutputReadError is a full-output command that ran, but whose output could
+// not be read back from the sandbox. The command did run: ExitCode is its
+// exit code, and the output may still be at StdoutPath and StderrPath.
+type OutputReadError struct {
+	// Err is the typed failure: code output_read_failed, effect ran.
+	Err *Error
+	// ExitCode is the command's exit code.
+	ExitCode int
+	// StdoutPath and StderrPath are where the sandbox kept the output.
+	StdoutPath string
+	StderrPath string
+}
+
+// Error returns the failure as a sentence.
+func (e *OutputReadError) Error() string {
+	if e == nil || e.Err == nil {
+		return "prized: output_read_failed"
+	}
+	return e.Err.Error()
+}
+
+// Unwrap exposes the typed failure.
+func (e *OutputReadError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// CommandError is a command call that failed after its start may have reached
+// the sandbox. RunID names the detached run when one was made. Stopped says
+// whether the SDK confirmed that it is no longer running: stopped, or already
+// ended. When Stopped is false the command may still be running as RunID.
+type CommandError struct {
+	// Err is the typed failure.
+	Err *Error
+	// RunID is the run's id, when a run was started.
+	RunID string
+	// Stopped is true once the command is confirmed stopped or already ended.
+	Stopped bool
+}
+
+// Error returns the failure as a sentence.
+func (e *CommandError) Error() string {
+	if e == nil || e.Err == nil {
+		return "prized: command_failed"
+	}
+	return e.Err.Error()
+}
+
+// Unwrap exposes the typed failure.
+func (e *CommandError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// MayStillRun reports whether the command was not confirmed stopped.
+func (e *CommandError) MayStillRun() bool {
+	return e != nil && !e.Stopped
+}
 
 func newError(code, message string) *Error {
 	if message == "" {
@@ -140,6 +233,8 @@ var defaultMessages = map[string]string{
 	"share_links_blocked":      "ports that open without the key are turned off for this workspace",
 	"sandbox_error":            "the sandbox failed",
 	"sandbox_deleted":          "the sandbox was deleted",
+	"command_failed":           "the command failed in the sandbox",
+	"output_read_failed":       "the command ran, but its output could not be read back",
 	"command_timeout":          "the command ran past its timeout and was killed",
 	"network_error":            "could not reach the Prized API",
 	"timeout":                  "the operation timed out",
