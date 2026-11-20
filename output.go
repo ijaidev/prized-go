@@ -94,13 +94,27 @@ func (s *Sandbox) execFullOutput(ctx context.Context, command, cwd string, env m
 		stderr, err = s.downloadOutput(ctx, stderrPath)
 	}
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			// The caller left: it cannot read the output, so its files go.
+			s.outputStep(removeScript(execID))
+			return nil, err
+		}
 		if result.TimedOut {
 			// The timeout is the caller's error and the files go with it.
 			s.outputStep(removeScript(execID))
 			return result, nil
 		}
+		var failure *Error
+		if errors.As(err, &failure) {
+			if failure.Code == "sandbox_deleted" {
+				// Nothing is kept: the output went with the sandbox.
+				return nil, restateDeletedOutput(failure, result, s.ID())
+			}
+			// The command ran, and its output stays for the caller to read.
+			return nil, outputReadError(err, result, execID, s.ID())
+		}
 		s.outputStep(removeScript(execID))
-		return nil, outputReadError(err, result, execID, s.ID())
+		return nil, err
 	}
 	s.outputStep(removeScript(execID))
 
@@ -171,6 +185,7 @@ func outputReadError(err error, result *ExecResult, execID, sandboxID string) er
 		message += " (" + reason + ")"
 	}
 	message += ". It is kept at " + stdoutPath + " and " + stderrPath + " for an hour"
+	exitCode := result.ExitCode
 	return &OutputReadError{
 		Err: &Error{
 			Code:      "output_read_failed",
@@ -178,12 +193,27 @@ func outputReadError(err error, result *ExecResult, execID, sandboxID string) er
 			Reason:    reason,
 			SandboxID: sandboxID,
 			Effect:    EffectRan,
+			ExitCode:  &exitCode,
 			cause:     err,
 		},
 		ExitCode:   result.ExitCode,
 		StdoutPath: stdoutPath,
 		StderrPath: stderrPath,
 	}
+}
+
+func restateDeletedOutput(failure *Error, result *ExecResult, sandboxID string) *Error {
+	copied := *failure
+	message := fmt.Sprintf("the command ran (exit %d), but the sandbox was deleted before its output could be read back", result.ExitCode)
+	copied.Message = message
+	if copied.SandboxID == "" {
+		copied.SandboxID = sandboxID
+	}
+	copied.Effect = EffectRan
+	copied.cause = failure
+	exitCode := result.ExitCode
+	copied.ExitCode = &exitCode
+	return &copied
 }
 
 func outputPaths(execID string) (string, string) {

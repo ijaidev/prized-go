@@ -175,6 +175,9 @@ func TestExecFullOutputReadsFilesBack(t *testing.T) {
 	if captures != 1 {
 		t.Fatalf("captures = %d, want 1", captures)
 	}
+	if removed := run.removeCount(); removed != 1 {
+		t.Fatalf("remove requests = %d, want 1 after a successful read", removed)
+	}
 }
 
 func TestExecFullOutputTruncationReasons(t *testing.T) {
@@ -245,6 +248,94 @@ func TestExecFullOutputReadFailureIsDistinct(t *testing.T) {
 	var failure *Error
 	if !errors.As(err, &failure) || failure.Code != "output_read_failed" || failure.Reason != "not_found" {
 		t.Fatalf("typed error = %#v", failure)
+	}
+	if removed := run.removeCount(); removed != 0 {
+		t.Fatalf("remove requests = %d, want 0 (the files stay for the caller)", removed)
+	}
+}
+
+func TestExecFullOutputSandboxDeletedRestatesCode(t *testing.T) {
+	api := newTestAPI(t)
+	run := newFakeRun(t, api)
+	execIDPattern := regexp.MustCompile(`exec_[0-9a-f]{16}`)
+	run.capture = func(w http.ResponseWriter, body map[string]any) {
+		env, _ := body["env"].(map[string]any)
+		execID := execIDPattern.FindString(env[outputScriptVar].(string))
+		writeExecResult(w, "prized-output "+execID+" 5 0\n", "", 7, false, 2)
+	}
+	api.downloadHandler = func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusGone, "sandbox_deleted", "the sandbox was deleted")
+	}
+	sandbox := newCommandSandbox(t, api)
+
+	_, err := sandbox.Exec(context.Background(), "make all", &ExecOptions{FullOutput: true})
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "sandbox_deleted" {
+		t.Fatalf("error = %v, want sandbox_deleted", err)
+	}
+	if failure.ExitCode == nil || *failure.ExitCode != 7 {
+		t.Fatalf("exit code = %v, want 7", failure.ExitCode)
+	}
+	if !strings.Contains(failure.Message, "before its output could be read back") {
+		t.Fatalf("message = %q", failure.Message)
+	}
+	if removed := run.removeCount(); removed != 0 {
+		t.Fatalf("remove requests = %d, want 0 (the output went with the sandbox)", removed)
+	}
+}
+
+func TestExecFullOutputCancellationRemovesAndRethrows(t *testing.T) {
+	api := newTestAPI(t)
+	run := newFakeRun(t, api)
+	execIDPattern := regexp.MustCompile(`exec_[0-9a-f]{16}`)
+	run.capture = func(w http.ResponseWriter, body map[string]any) {
+		env, _ := body["env"].(map[string]any)
+		execID := execIDPattern.FindString(env[outputScriptVar].(string))
+		writeExecResult(w, "prized-output "+execID+" 5 0\n", "", 0, false, 2)
+	}
+	downloadStarted := make(chan struct{})
+	api.downloadHandler = func(_ http.ResponseWriter, r *http.Request) {
+		close(downloadStarted)
+		<-r.Context().Done()
+	}
+	sandbox := newCommandSandbox(t, api)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := sandbox.Exec(ctx, "make all", &ExecOptions{FullOutput: true})
+		done <- err
+	}()
+	select {
+	case <-downloadStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the download did not start")
+	}
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	var readError *OutputReadError
+	if errors.As(err, &readError) {
+		t.Fatalf("error = %v, want the cancellation, not an output-read error", err)
+	}
+	if removed := run.removeCount(); removed == 0 {
+		t.Fatal("the canceled run's files were not removed")
+	}
+}
+
+func TestExecReplacementCharsDoNotMistakeCap(t *testing.T) {
+	api := newTestAPI(t)
+	api.execHandler = func(w http.ResponseWriter, _ *http.Request) {
+		writeExecResult(w, strings.Repeat("\uFFFD", 2*1024*1024), "", 0, false, 1)
+	}
+	sandbox := newCommandSandbox(t, api)
+	result, err := sandbox.Exec(context.Background(), "binary", nil)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.Truncated || result.TruncatedReason != "" {
+		t.Fatalf("truncated = %v/%q, want not truncated", result.Truncated, result.TruncatedReason)
 	}
 }
 

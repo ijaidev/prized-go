@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -413,20 +414,44 @@ func TestCreateWithCallerKeyLeavesSandbox(t *testing.T) {
 	api := newTestAPI(t)
 	api.state = StateStarting
 
-	_, err := api.createSandbox(t, CreateSandboxOptions{
+	// The wait is ended deterministically after the first state read, so the
+	// test does not depend on a short timer firing before the create is sent.
+	polled := make(chan struct{})
+	var once sync.Once
+	api.getHandler = func(_ http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(polled) })
+		<-r.Context().Done()
+	}
+	ctx := &manualDeadlineContext{Context: context.Background(), done: make(chan struct{})}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-polled:
+			close(ctx.done)
+		case <-stop:
+		}
+	}()
+
+	client := api.client()
+	_, err := client.Sandboxes().Create(ctx, CreateSandboxOptions{
 		IdempotencyKey: "caller-key",
-		Timeout:        500 * time.Millisecond,
+		Timeout:        10 * time.Second,
 	})
 	if err == nil {
 		t.Fatal("Create succeeded, want timeout")
+	}
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Code != "timeout" {
+		t.Fatalf("error = %v, want timeout", err)
 	}
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	if api.deletes != 0 {
 		t.Fatalf("deletes = %d, want 0", api.deletes)
 	}
-	if api.idempotencyKey[0] != "caller-key" {
-		t.Fatalf("idempotency key = %q", api.idempotencyKey[0])
+	if len(api.idempotencyKey) == 0 || api.idempotencyKey[0] != "caller-key" {
+		t.Fatalf("idempotency keys = %#v", api.idempotencyKey)
 	}
 }
 

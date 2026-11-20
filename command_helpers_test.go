@@ -51,6 +51,8 @@ type fakeRun struct {
 	abandonExit  int
 	abandonCalls int
 
+	removeCalls int
+
 	captures int
 	capture  func(w http.ResponseWriter, body map[string]any)
 }
@@ -84,7 +86,7 @@ func (r *fakeRun) handle(w http.ResponseWriter, request *http.Request) {
 	case strings.HasPrefix(command, "d=") && strings.Contains(command, "prized-output"):
 		r.handleCollect(w)
 	case strings.Contains(command, "exec_*") && strings.Contains(command, "rm -rf"):
-		writeExecResult(w, "", "", 0, false, 0)
+		r.handleRemove(w)
 	case command == outputRunScript:
 		r.handleCapture(w, body)
 	default:
@@ -233,6 +235,13 @@ func (r *fakeRun) handleCollect(w http.ResponseWriter) {
 	writeExecResult(w, "", "", 0, false, 0)
 }
 
+func (r *fakeRun) handleRemove(w http.ResponseWriter) {
+	r.mu.Lock()
+	r.removeCalls++
+	r.mu.Unlock()
+	writeExecResult(w, "", "", 0, false, 0)
+}
+
 func (r *fakeRun) handleCapture(w http.ResponseWriter, body map[string]any) {
 	r.mu.Lock()
 	r.captures++
@@ -284,6 +293,12 @@ func (r *fakeRun) snapshot() (startCalls, polls, cleanupCalls, abandonCalls int,
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.startCalls, r.polls, r.cleanupCalls, r.abandonCalls, append([]string(nil), r.killCalls...)
+}
+
+func (r *fakeRun) removeCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.removeCalls
 }
 
 func writeExecResult(w http.ResponseWriter, stdout, stderr string, exitCode int, timedOut bool, durationMS float64) {

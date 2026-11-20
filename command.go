@@ -870,7 +870,7 @@ func parseExecResult(status int, body []byte, sandboxID string) (*ExecResult, er
 	if document.DurationMS != nil {
 		result.Duration = time.Duration(*document.DurationMS * float64(time.Millisecond))
 	}
-	if document.Truncated || len(document.Stdout) >= maxOutputBytes || len(document.Stderr) >= maxOutputBytes {
+	if document.Truncated || reachedCap(document.Stdout) || reachedCap(document.Stderr) {
 		result.Truncated = true
 		result.TruncatedReason = TruncationOutputLimit
 	}
@@ -878,6 +878,13 @@ func parseExecResult(status int, body []byte, sandboxID string) (*ExecResult, er
 		result.ExitCode = -1
 	}
 	return result, nil
+}
+
+func reachedCap(text string) bool {
+	// A U+FFFD stands for (at least) one byte the edge kept that was not valid
+	// UTF-8, so it counts as one byte, not the three it re-encodes to.
+	size := len(text) - 2*strings.Count(text, "\uFFFD")
+	return size >= maxOutputBytes
 }
 
 func parseStart(result *ExecResult, sandboxID string) (int, error) {

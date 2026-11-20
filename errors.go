@@ -41,6 +41,7 @@ func (e Effect) String() string {
 // missing_api_key, network_error, timeout, canceled, bad_response, or
 // handle_closed. Body is the decoded error document when the answer carried
 // one. Effect classifies whether the operation ran before the failure.
+// ExitCode is the command's exit code when the failure came after it ran.
 type Error struct {
 	Code       string
 	Status     int
@@ -50,6 +51,7 @@ type Error struct {
 	Body       map[string]any
 	RetryAfter time.Duration
 	Effect     Effect
+	ExitCode   *int
 
 	cause   error
 	notSent bool
