@@ -238,6 +238,9 @@ const (
 	requestRead requestMode = iota
 	requestKeyed
 	requestExec
+	// requestStaged is a write's upload to a fresh staging name: safe to send
+	// again, unlike one straight to the file.
+	requestStaged
 )
 
 type requestSpec struct {
@@ -248,12 +251,33 @@ type requestSpec struct {
 	mode           requestMode
 	sandboxID      string
 	attemptTimeout time.Duration // 0: client default; negative: no attempt timeout
+	maxBody        int64         // >0: refuse an answer body larger than this many bytes
 }
 
 type httpResponse struct {
 	status int
 	header http.Header
 	body   []byte
+}
+
+var errBodyTooLarge = errors.New("prized: answer body is over the limit")
+
+// readResponseBody reads an answer body, refusing one larger than maxBody.
+func readResponseBody(response *http.Response, maxBody int64) ([]byte, error) {
+	if maxBody <= 0 {
+		return io.ReadAll(response.Body)
+	}
+	if response.ContentLength > maxBody {
+		return nil, errBodyTooLarge
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBody {
+		return nil, errBodyTooLarge
+	}
+	return body, nil
 }
 
 var neverRetry = map[string]bool{
@@ -358,10 +382,18 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*httpResponse, error
 			continue
 		}
 
-		body, readErr := io.ReadAll(response.Body)
+		body, readErr := readResponseBody(response, spec.maxBody)
 		_ = response.Body.Close()
 		cancel()
 		if readErr != nil {
+			if errors.Is(readErr, errBodyTooLarge) {
+				return nil, &Error{
+					Code:      "file_too_large",
+					Message:   defaultMessage("file_too_large"),
+					SandboxID: spec.sandboxID,
+					Effect:    EffectNotRun,
+				}
+			}
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, contextError(ctxErr, spec.sandboxID, mergeEffect(&Error{Effect: EffectMaybeRan}, acted).Effect)
 			}
@@ -436,6 +468,9 @@ func (c *Client) retryable(mode requestMode, method string, failure *Error) bool
 	switch failure.Status {
 	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return true
+	}
+	if mode == requestStaged {
+		return execUndelivered[failure.Code]
 	}
 	if mode == requestRead && method == http.MethodGet && failure.Status >= 500 {
 		return true
