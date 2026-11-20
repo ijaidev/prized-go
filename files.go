@@ -350,7 +350,7 @@ func (f *Files) Remove(ctx context.Context, path string, options *RemoveOptions)
 	recursive := options != nil && options.Recursive
 	// Command retry rules: a lost answer is not sent again, or a path the
 	// sandbox recreated in the meantime would be deleted too.
-	result, err := f.runCommand(ctx, removeScript(target, recursive), "", requestExec)
+	result, err := f.runCommand(ctx, fileRemoveScript(target, recursive), "", requestExec)
 	if err != nil {
 		return err
 	}
@@ -425,7 +425,7 @@ func (f *Files) stagedUploadFailed(err error, staging, target string) error {
 func (f *Files) discard(staging string) {
 	ctx, cancel := context.WithTimeout(context.Background(), discardTimeout)
 	defer cancel()
-	_, _ = f.runCommand(ctx, removeScript(staging, false), fileHomeDir, requestRead)
+	_, _ = f.runCommand(ctx, fileRemoveScript(staging, false), fileHomeDir, requestRead)
 }
 
 func (f *Files) chmod(ctx context.Context, path string, mode os.FileMode) error {
@@ -623,7 +623,7 @@ func existsScript(path string) string {
 
 // removeScript removes a path; a missing path is not an error. A directory
 // removed without recursion must be empty (exit 46 otherwise).
-func removeScript(path string, recursive bool) string {
+func fileRemoveScript(path string, recursive bool) string {
 	onDirectory := `rm -rf -- "$p"`
 	if !recursive {
 		onDirectory = `rmdir -- "$p" 2> /dev/null || exit 46`
@@ -700,29 +700,6 @@ func answerLanded(err error) bool {
 
 // shellQuote renders one argument as a POSIX shell word, as the reference
 // SDKs do.
-func shellQuote(value string) string {
-	if value == "" {
-		return "''"
-	}
-	safe := true
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-			continue
-		}
-		switch c {
-		case '_', '/', '.', ',', ':', '=', '@', '%', '+', '-':
-			continue
-		}
-		safe = false
-		break
-	}
-	if safe {
-		return value
-	}
-	return `'` + strings.ReplaceAll(value, `'`, `'"'"'`) + `'`
-}
-
 func readLocalFile(path, sandboxID string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {

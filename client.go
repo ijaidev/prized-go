@@ -35,8 +35,13 @@ const (
 	DefaultStartTimeout = 180 * time.Second
 	// DefaultDeleteTimeout bounds a delete and its optional wait.
 	DefaultDeleteTimeout = 120 * time.Second
+	// DefaultCallTimeout bounds connect, list, templates and delete by labels
+	// when the caller's context names no deadline.
+	DefaultCallTimeout = 120 * time.Second
 	// DefaultExecTimeout bounds a command when the call names none.
 	DefaultExecTimeout = 60 * time.Second
+	// DefaultPollOutage is how long a wait keeps polling through an outage.
+	DefaultPollOutage = 120 * time.Second
 )
 
 const userAgent = "prized-go/0.1.0"
@@ -57,6 +62,7 @@ type clientOptions struct {
 	timeoutSet     bool
 	pollInterval   time.Duration
 	pollSet        bool
+	pollOutage     time.Duration
 }
 
 // WithAPIKey sets the key sent with every request. Without this option the
@@ -109,6 +115,15 @@ func WithPollInterval(interval time.Duration) Option {
 	}
 }
 
+// WithPollOutage sets how long a streamed command's or a command handle's
+// wait keeps polling through an outage before it gives up. Zero gives up as
+// soon as one poll's retries run out.
+func WithPollOutage(outage time.Duration) Option {
+	return func(options *clientOptions) {
+		options.pollOutage = outage
+	}
+}
+
 // Client holds authentication and transport settings.
 type Client struct {
 	apiKey         string
@@ -118,6 +133,7 @@ type Client struct {
 	maxRetries     int
 	requestTimeout time.Duration
 	pollInterval   time.Duration
+	pollOutage     time.Duration
 	retryBase      time.Duration
 	sandboxes      *Sandboxes
 }
@@ -130,6 +146,7 @@ func NewClient(options ...Option) (*Client, error) {
 		maxRetries:     DefaultMaxRetries,
 		requestTimeout: DefaultRequestTimeout,
 		pollInterval:   DefaultPollInterval,
+		pollOutage:     DefaultPollOutage,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -164,6 +181,9 @@ func NewClient(options ...Option) (*Client, error) {
 	if config.pollInterval <= 0 {
 		return nil, newError("invalid_argument", "pollInterval must be greater than zero")
 	}
+	if config.pollOutage < 0 {
+		return nil, newError("invalid_argument", "pollOutage must be zero or greater")
+	}
 
 	httpClient := config.httpClient
 	if config.httpClientSet && httpClient == nil {
@@ -191,6 +211,7 @@ func NewClient(options ...Option) (*Client, error) {
 		maxRetries:     config.maxRetries,
 		requestTimeout: config.requestTimeout,
 		pollInterval:   config.pollInterval,
+		pollOutage:     config.pollOutage,
 		retryBase:      500 * time.Millisecond,
 	}
 	client.sandboxes = &Sandboxes{client: client}
@@ -241,6 +262,9 @@ const (
 	// requestStaged is a write's upload to a fresh staging name: safe to send
 	// again, unlike one straight to the file.
 	requestStaged
+	// requestBulkDelete is a mutation that selects its targets again on every
+	// request, so it is sent again only when it provably never arrived.
+	requestBulkDelete
 )
 
 type requestSpec struct {
@@ -447,8 +471,14 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*httpResponse, error
 		}
 
 		failure := errorFromResponse(response.StatusCode, body, response.Header, spec.sandboxID)
-		if response.StatusCode >= 500 && spec.mode != requestRead {
-			if !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
+		if response.StatusCode >= 500 {
+			if spec.mode == requestBulkDelete {
+				// A gateway error may come after the delete ran. Refusals
+				// known to happen before anything changes stay not_run.
+				if !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
+					failure.Effect = EffectMaybeRan
+				}
+			} else if spec.mode != requestRead && !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
 				failure.Effect = EffectMaybeRan
 			}
 		}
@@ -472,6 +502,14 @@ func mergeEffect(failure *Error, acted Effect) *Error {
 func (c *Client) retryable(mode requestMode, method string, failure *Error) bool {
 	if neverRetry[failure.Code] {
 		return false
+	}
+	if mode == requestBulkDelete {
+		// The selector is live: resending after a lost answer could delete
+		// sandboxes created since the first request.
+		if failure.Status == 0 {
+			return failure.notSent
+		}
+		return failure.Status == http.StatusTooManyRequests
 	}
 	if failure.Status == 0 {
 		if mode == requestExec {
