@@ -1,8 +1,10 @@
 package prized
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +29,7 @@ type testAPI struct {
 	extends             int
 	timeouts            int
 	childDeletes        int
+	uploads             int
 	downloads           int
 	lists               int
 	templateGets        int
@@ -46,6 +49,7 @@ type testAPI struct {
 	forkHandler         http.HandlerFunc
 	extendHandler       http.HandlerFunc
 	timeoutHandler      http.HandlerFunc
+	uploadHandler       http.HandlerFunc
 	downloadHandler     http.HandlerFunc
 	listHandler         http.HandlerFunc
 	templatesHandler    http.HandlerFunc
@@ -65,6 +69,12 @@ type testAPI struct {
 	timeoutKey          string
 	childStates         map[string]string
 	childReasons        map[string]string
+	execCommands        []string
+	execCwds            []string
+	uploadPaths         []string
+	uploadBodies        [][]byte
+	uploadTypes         []string
+	downloadPaths       []string
 }
 
 const testPreviewURLTemplate = "https://{port}-sbx.preview.prized.test/"
@@ -111,18 +121,52 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		a.handleVerb(w, r, id, verb)
 	case r.Method == http.MethodPost && path == "/v1/sandbox/sbx_1/process/execute":
+		body, readErr := io.ReadAll(r.Body)
+		var request struct {
+			Command string `json:"command"`
+			Cwd     string `json:"cwd"`
+		}
+		_ = json.Unmarshal(body, &request)
 		a.mu.Lock()
 		a.execs++
+		a.execCommands = append(a.execCommands, request.Command)
+		a.execCwds = append(a.execCwds, request.Cwd)
 		handler := a.execHandler
 		a.mu.Unlock()
+		if readErr != nil {
+			http.Error(w, "could not read the command", http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		if handler != nil {
 			handler(w, r)
 			return
 		}
 		http.Error(w, "no exec handler", http.StatusInternalServerError)
+	case r.Method == http.MethodPost && path == "/v1/sandbox/sbx_1/files/upload":
+		body, readErr := io.ReadAll(r.Body)
+		path := r.URL.Query().Get("path")
+		a.mu.Lock()
+		a.uploads++
+		a.uploadPaths = append(a.uploadPaths, path)
+		a.uploadBodies = append(a.uploadBodies, body)
+		a.uploadTypes = append(a.uploadTypes, r.Header.Get("Content-Type"))
+		handler := a.uploadHandler
+		a.mu.Unlock()
+		if readErr != nil {
+			http.Error(w, "could not read the upload", http.StatusBadRequest)
+			return
+		}
+		if handler != nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			handler(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"path": path, "size": len(body)})
 	case r.Method == http.MethodGet && path == "/v1/sandbox/sbx_1/files/download":
 		a.mu.Lock()
 		a.downloads++
+		a.downloadPaths = append(a.downloadPaths, r.URL.Query().Get("path"))
 		handler := a.downloadHandler
 		a.mu.Unlock()
 		if handler != nil {
@@ -456,6 +500,33 @@ func (a *testAPI) counts() (creates, gets, execs, deletes int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.creates, a.gets, a.execs, a.deletes
+}
+
+func (a *testAPI) fileCounts() (uploads, downloads int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.uploads, a.downloads
+}
+
+func (a *testAPI) execLog() (commands, cwds []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.execCommands...), append([]string(nil), a.execCwds...)
+}
+
+func (a *testAPI) uploadLog() (paths []string, bodies [][]byte, types []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, body := range a.uploadBodies {
+		bodies = append(bodies, append([]byte(nil), body...))
+	}
+	return append([]string(nil), a.uploadPaths...), bodies, append([]string(nil), a.uploadTypes...)
+}
+
+func (a *testAPI) downloadLog() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.downloadPaths...)
 }
 
 func (a *testAPI) discoveryCounts() (lists, templates, bulkDeletes, connects int) {
