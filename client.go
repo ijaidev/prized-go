@@ -35,6 +35,8 @@ const (
 	DefaultStartTimeout = 180 * time.Second
 	// DefaultDeleteTimeout bounds a delete and its optional wait.
 	DefaultDeleteTimeout = 120 * time.Second
+	// DefaultPauseTimeout bounds a pause and its wait for paused.
+	DefaultPauseTimeout = 120 * time.Second
 	// DefaultCallTimeout bounds connect, list, templates and delete by labels
 	// when the caller's context names no deadline.
 	DefaultCallTimeout = 120 * time.Second
