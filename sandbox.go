@@ -28,10 +28,41 @@ type Sandboxes struct {
 	client *Client
 }
 
+// SandboxResources is a sandbox's shape. Memory is in MiB, as the API sends
+// it; DiskGB is in GiB. A zero field is left out of a create, so the
+// template's default applies.
+type SandboxResources struct {
+	VCPU     int `json:"vcpu,omitempty"`
+	MemoryMB int `json:"memoryMb,omitempty"`
+	DiskGB   int `json:"diskGb,omitempty"`
+}
+
+// MemoryGB returns the memory in GiB.
+func (r SandboxResources) MemoryGB() float64 {
+	return float64(r.MemoryMB) / 1024
+}
+
 // CreateSandboxOptions describes a new sandbox.
 type CreateSandboxOptions struct {
 	// Template is the sandbox template; DefaultTemplate when empty.
 	Template string
+	// Resources sets the shape. A nil pointer or a zero field leaves that
+	// part at the template's default.
+	Resources *SandboxResources
+	// EnvVars are set for every command the sandbox runs.
+	EnvVars map[string]string
+	// Labels are yours to filter on later with List and DeleteByLabels.
+	Labels map[string]string
+	// AutoPauseMin pauses the sandbox after this many idle minutes; 0 is off.
+	AutoPauseMin int
+	// AutoDeleteMin deletes the sandbox after this many minutes paused; 0 is off.
+	AutoDeleteMin int
+	// MaxRuntimeMin is the sandbox's run time in minutes; 0 uses the
+	// template's default.
+	MaxRuntimeMin int
+	// NoWait returns as soon as the API accepts (state starting) instead of
+	// waiting for running. The request still stays within Timeout.
+	NoWait bool
 	// IdempotencyKey makes a create repeatable. The client generates one when
 	// empty; a caller-supplied key also disables cleanup of a failed create.
 	IdempotencyKey string
@@ -70,9 +101,19 @@ type Sandbox struct {
 	id                 string
 	state              string
 	template           string
+	templateBuild      string
+	resources          SandboxResources
+	labels             map[string]string
+	autoPauseMin       int
+	autoDeleteMin      int
+	maxRuntimeMin      int
+	expiresAt          time.Time
+	createdAt          time.Time
+	lastActiveAt       time.Time
+	errorReason        string
 	toolboxBase        string
 	previewURLTemplate string
-	errorReason        string
+	raw                map[string]any
 	closed             bool
 }
 
@@ -97,6 +138,96 @@ func (s *Sandbox) Template() string {
 	return s.template
 }
 
+// TemplateBuild returns the template build named by the last answer.
+func (s *Sandbox) TemplateBuild() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.templateBuild
+}
+
+// Resources returns the shape named by the last answer.
+func (s *Sandbox) Resources() SandboxResources {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.resources
+}
+
+// Labels returns a copy of the labels named by the last answer.
+func (s *Sandbox) Labels() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneLabels(s.labels)
+}
+
+// AutoPauseMin returns the idle minutes before the sandbox pauses itself,
+// or 0 when that is off.
+func (s *Sandbox) AutoPauseMin() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.autoPauseMin
+}
+
+// AutoDeleteMin returns the minutes paused before the sandbox is deleted,
+// or 0 when that is off.
+func (s *Sandbox) AutoDeleteMin() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.autoDeleteMin
+}
+
+// MaxRuntimeMin returns the run time in minutes named by the last answer.
+func (s *Sandbox) MaxRuntimeMin() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.maxRuntimeMin
+}
+
+// ExpiresAt returns when the sandbox's run time ends. It is the zero time
+// while a paused sandbox's clock is stopped.
+func (s *Sandbox) ExpiresAt() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.expiresAt
+}
+
+// CreatedAt returns when the sandbox was created, as of the last answer.
+func (s *Sandbox) CreatedAt() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.createdAt
+}
+
+// LastActiveAt returns the last activity the auto-pause clock counts from,
+// as of the last answer.
+func (s *Sandbox) LastActiveAt() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastActiveAt
+}
+
+// ErrorReason returns the short failure explanation from the last answer,
+// or "" when there is none.
+func (s *Sandbox) ErrorReason() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.errorReason
+}
+
+// Raw returns a shallow copy of the sandbox document as the API last sent it.
+// Nested maps and slices are shared with the handle.
+func (s *Sandbox) Raw() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.raw == nil {
+		return nil
+	}
+	document := make(map[string]any, len(s.raw))
+	for key, value := range s.raw {
+		document[key] = value
+	}
+	return document
+}
+
 // Close marks the handle closed. It sends nothing; the sandbox keeps running.
 // Later Exec and Delete calls fail locally with ErrHandleClosed.
 func (s *Sandbox) Close() {
@@ -111,7 +242,20 @@ func (s *Sandbox) isClosed() bool {
 	return s.closed
 }
 
-// Create makes a sandbox and returns once it is running.
+// createSandboxRequest is the POST /sandboxes body. Fields the caller left
+// alone are omitted, so the template's defaults apply.
+type createSandboxRequest struct {
+	Template      string            `json:"template"`
+	Resources     *SandboxResources `json:"resources,omitempty"`
+	EnvVars       map[string]string `json:"envVars,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	AutoPauseMin  *int              `json:"autoPauseMin,omitempty"`
+	AutoDeleteMin *int              `json:"autoDeleteMin,omitempty"`
+	MaxRuntimeMin *int              `json:"maxRuntimeMin,omitempty"`
+}
+
+// Create makes a sandbox and returns once it is running, or as soon as the
+// API accepts when NoWait is set.
 func (s *Sandboxes) Create(ctx context.Context, options CreateSandboxOptions) (*Sandbox, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -127,6 +271,12 @@ func (s *Sandboxes) Create(ctx context.Context, options CreateSandboxOptions) (*
 	if timeout < 0 {
 		return nil, newError("invalid_argument", "timeout must be greater than zero")
 	}
+	if options.Resources != nil && (options.Resources.VCPU < 0 || options.Resources.MemoryMB < 0 || options.Resources.DiskGB < 0) {
+		return nil, newError("invalid_argument", "resources must not be negative")
+	}
+	if options.AutoPauseMin < 0 || options.AutoDeleteMin < 0 || options.MaxRuntimeMin < 0 {
+		return nil, newError("invalid_argument", "auto-pause, auto-delete and max runtime must not be negative")
+	}
 	key := options.IdempotencyKey
 	generatedKey := false
 	if key == "" {
@@ -140,9 +290,32 @@ func (s *Sandboxes) Create(ctx context.Context, options CreateSandboxOptions) (*
 		return nil, newError("invalid_argument", "idempotencyKey must be 1 to 128 printable characters with no spaces")
 	}
 
-	body, err := json.Marshal(struct {
-		Template string `json:"template"`
-	}{Template: template})
+	request := createSandboxRequest{Template: template}
+	if options.Resources != nil {
+		resources := *options.Resources
+		if resources.VCPU != 0 || resources.MemoryMB != 0 || resources.DiskGB != 0 {
+			request.Resources = &resources
+		}
+	}
+	if len(options.EnvVars) > 0 {
+		request.EnvVars = options.EnvVars
+	}
+	if len(options.Labels) > 0 {
+		request.Labels = options.Labels
+	}
+	if options.AutoPauseMin > 0 {
+		pause := options.AutoPauseMin
+		request.AutoPauseMin = &pause
+	}
+	if options.AutoDeleteMin > 0 {
+		deleteAfter := options.AutoDeleteMin
+		request.AutoDeleteMin = &deleteAfter
+	}
+	if options.MaxRuntimeMin > 0 {
+		runtime := options.MaxRuntimeMin
+		request.MaxRuntimeMin = &runtime
+	}
+	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, &Error{Code: "internal_error", Message: "could not encode the create request", cause: err}
 	}
@@ -151,9 +324,15 @@ func (s *Sandboxes) Create(ctx context.Context, options CreateSandboxOptions) (*
 	callCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
+	endpoint := s.client.apiURL("/sandboxes")
+	if !options.NoWait {
+		// Ask the API to hold the answer until running; it answers early
+		// when the bound passes, and the handle is polled below.
+		endpoint += "?wait=running"
+	}
 	response, err := s.client.do(callCtx, requestSpec{
 		method: http.MethodPost,
-		url:    s.client.apiURL("/sandboxes"),
+		url:    endpoint,
 		body:   body,
 		headers: map[string]string{
 			"Content-Type":    "application/json",
@@ -176,7 +355,7 @@ func (s *Sandboxes) Create(ctx context.Context, options CreateSandboxOptions) (*
 		return nil, parseErr
 	}
 	sandbox := newSandbox(s.client, document)
-	if sandbox.State() == StateRunning {
+	if options.NoWait || sandbox.State() == StateRunning {
 		return sandbox, nil
 	}
 
@@ -430,55 +609,139 @@ func (s *Sandbox) applyDocument(document *sandboxDocument) {
 	if document.Template != "" {
 		s.template = document.Template
 	}
+	if document.TemplateBuild != "" {
+		s.templateBuild = document.TemplateBuild
+	}
 	if document.ToolboxBase != "" {
 		s.toolboxBase = document.ToolboxBase
 	}
+	s.resources = document.Resources
+	s.labels = cloneLabels(document.Labels)
+	s.autoPauseMin = intValue(document.AutoPauseMin)
+	s.autoDeleteMin = intValue(document.AutoDeleteMin)
+	s.maxRuntimeMin = intValue(document.MaxRuntimeMin)
+	s.expiresAt = parseAPITime(document.ExpiresAt)
+	s.createdAt = parseAPITime(document.CreatedAt)
+	s.lastActiveAt = parseAPITime(document.LastActiveAt)
 	s.previewURLTemplate = document.PreviewURLTemplate
 	s.errorReason = document.ErrorReason
+	s.raw = document.raw
+}
+
+func cloneLabels(labels map[string]string) map[string]string {
+	if labels == nil {
+		return nil
+	}
+	copy := make(map[string]string, len(labels))
+	for key, value := range labels {
+		copy[key] = value
+	}
+	return copy
+}
+
+func intValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func parseAPITime(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 
 type sandboxDocument struct {
-	ID                 string `json:"id"`
-	State              string `json:"state"`
-	Template           string `json:"template"`
-	ToolboxBase        string `json:"toolboxBase"`
-	PreviewURLTemplate string `json:"previewUrlTemplate"`
-	ErrorReason        string `json:"errorReason"`
+	ID                 string            `json:"id"`
+	State              string            `json:"state"`
+	Template           string            `json:"template"`
+	TemplateBuild      string            `json:"templateBuild"`
+	Resources          SandboxResources  `json:"resources"`
+	Labels             map[string]string `json:"labels"`
+	AutoPauseMin       *int              `json:"autoPauseMin"`
+	AutoDeleteMin      *int              `json:"autoDeleteMin"`
+	MaxRuntimeMin      *int              `json:"maxRuntimeMin"`
+	ExpiresAt          string            `json:"expiresAt"`
+	CreatedAt          string            `json:"createdAt"`
+	LastActiveAt       string            `json:"lastActiveAt"`
+	ToolboxBase        string            `json:"toolboxBase"`
+	PreviewURLTemplate string            `json:"previewUrlTemplate"`
+	ErrorReason        string            `json:"errorReason"`
+
+	raw map[string]any
 }
 
 type sandboxEnvelope struct {
-	Sandbox *sandboxDocument `json:"sandbox"`
+	Sandbox json.RawMessage `json:"sandbox"`
+}
+
+func badSandboxResponse(status int) *Error {
+	return &Error{
+		Code:    "bad_response",
+		Status:  status,
+		Message: "the API answered without a sandbox",
+		Effect:  EffectRan,
+	}
 }
 
 func parseSandboxDocument(status int, body []byte) (*sandboxDocument, error) {
 	var envelope sandboxEnvelope
-	if len(body) == 0 || json.Unmarshal(body, &envelope) != nil || envelope.Sandbox == nil || envelope.Sandbox.ID == "" {
+	if len(body) == 0 || json.Unmarshal(body, &envelope) != nil {
+		return nil, badSandboxResponse(status)
+	}
+	return parseSandboxObject(status, envelope.Sandbox)
+}
+
+func parseSandboxObject(status int, raw json.RawMessage) (*sandboxDocument, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, badSandboxResponse(status)
+	}
+	var document sandboxDocument
+	if err := json.Unmarshal(raw, &document); err != nil || document.ID == "" {
+		return nil, badSandboxResponse(status)
+	}
+	var rawDocument map[string]any
+	if err := json.Unmarshal(raw, &rawDocument); err == nil {
+		document.raw = rawDocument
+	}
+	if document.State == "" {
+		document.State = StateStarting
+	}
+	return &document, nil
+}
+
+func parseSandboxList(status int, body []byte) ([]*sandboxDocument, error) {
+	var envelope struct {
+		Sandboxes *[]json.RawMessage `json:"sandboxes"`
+	}
+	if len(body) == 0 || json.Unmarshal(body, &envelope) != nil || envelope.Sandboxes == nil {
 		return nil, &Error{
 			Code:    "bad_response",
 			Status:  status,
-			Message: "the API answered without a sandbox",
+			Message: "the API answered without a sandbox list",
 			Effect:  EffectRan,
 		}
 	}
-	if envelope.Sandbox.State == "" {
-		envelope.Sandbox.State = StateStarting
+	documents := make([]*sandboxDocument, 0, len(*envelope.Sandboxes))
+	for _, raw := range *envelope.Sandboxes {
+		document, err := parseSandboxObject(status, raw)
+		if err != nil {
+			return nil, err
+		}
+		documents = append(documents, document)
 	}
-	return envelope.Sandbox, nil
+	return documents, nil
 }
 
 func newSandbox(client *Client, document *sandboxDocument) *Sandbox {
-	sandbox := &Sandbox{
-		client:             client,
-		id:                 document.ID,
-		state:              document.State,
-		template:           document.Template,
-		toolboxBase:        document.ToolboxBase,
-		previewURLTemplate: document.PreviewURLTemplate,
-		errorReason:        document.ErrorReason,
-	}
-	if sandbox.state == "" {
-		sandbox.state = StateStarting
-	}
+	sandbox := &Sandbox{client: client}
+	sandbox.applyDocument(document)
 	return sandbox
 }
 

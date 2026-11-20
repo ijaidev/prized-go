@@ -146,6 +146,7 @@ var defaultMessages = map[string]string{
 	"canceled":                 "the operation was canceled",
 	"bad_response":             "the API answered with something the client could not read",
 	"http_error":               "the API answered with an error the client does not recognise",
+	"delete_incomplete":        "some matching sandboxes are left; call again to delete the rest",
 	"edge_unknown":             "the API named no command endpoint this client trusts",
 	"handle_closed":            "the sandbox handle is closed",
 	"unexpected_redirect":      "the API answered with a redirect; the client does not follow redirects with your key",
