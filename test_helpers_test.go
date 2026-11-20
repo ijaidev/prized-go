@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,59 +20,67 @@ type testAPI struct {
 	gets           int
 	execs          int
 	deletes        int
+	pauses         int
+	resumes        int
+	refreshes      int
+	forks          int
+	extends        int
+	timeouts       int
+	childDeletes   int
 	state          string
 	deleteStatus   int
 	getFailures    int
 	createHandler  http.HandlerFunc
 	execHandler    http.HandlerFunc
 	getHandler     http.HandlerFunc
+	pauseHandler   http.HandlerFunc
+	resumeHandler  http.HandlerFunc
+	refreshHandler http.HandlerFunc
+	forkHandler    http.HandlerFunc
+	extendHandler  http.HandlerFunc
+	timeoutHandler http.HandlerFunc
 	createBody     map[string]any
+	forkBody       map[string]any
+	extendBody     map[string]any
+	timeoutBody    map[string]any
 	idempotencyKey []string
+	forkKey        string
+	extendKey      string
+	timeoutKey     string
+	childStates    map[string]string
+	childReasons   map[string]string
 }
 
 func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
-	api := &testAPI{t: t, state: StateRunning}
+	api := &testAPI{
+		t:            t,
+		state:        StateRunning,
+		childStates:  map[string]string{},
+		childReasons: map[string]string{},
+	}
 	api.server = httptest.NewServer(http.HandlerFunc(api.handle))
 	t.Cleanup(api.server.Close)
 	return api
 }
 
 func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
 	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sandboxes":
-		a.mu.Lock()
-		a.creates++
-		a.idempotencyKey = append(a.idempotencyKey, r.Header.Get("Idempotency-Key"))
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
-			a.createBody = body
-		}
-		handler := a.createHandler
-		a.mu.Unlock()
-		if handler != nil {
-			handler(w, r)
+	case r.Method == http.MethodPost && path == "/api/v1/sandboxes":
+		a.handleCreate(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/sandboxes/"):
+		a.handleGet(w, r, strings.TrimPrefix(path, "/api/v1/sandboxes/"))
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/api/v1/sandboxes/"):
+		a.handleDelete(w, strings.TrimPrefix(path, "/api/v1/sandboxes/"))
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/sandboxes/"):
+		id, verb, found := strings.Cut(strings.TrimPrefix(path, "/api/v1/sandboxes/"), "/")
+		if !found {
+			http.NotFound(w, r)
 			return
 		}
-		writeSandbox(w, http.StatusCreated, StateStarting, a.server.URL)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sandboxes/sbx_1":
-		a.mu.Lock()
-		a.gets++
-		state := a.state
-		handler := a.getHandler
-		if a.getFailures > 0 {
-			a.getFailures--
-			a.mu.Unlock()
-			writeError(w, http.StatusInternalServerError, "http_error", "temporary")
-			return
-		}
-		a.mu.Unlock()
-		if handler != nil {
-			handler(w, r)
-			return
-		}
-		writeSandbox(w, http.StatusOK, state, a.server.URL)
-	case r.Method == http.MethodPost && r.URL.Path == "/v1/sandbox/sbx_1/process/execute":
+		a.handleVerb(w, r, id, verb)
+	case r.Method == http.MethodPost && path == "/v1/sandbox/sbx_1/process/execute":
 		a.mu.Lock()
 		a.execs++
 		handler := a.execHandler
@@ -81,18 +90,219 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "no exec handler", http.StatusInternalServerError)
-	case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/sandboxes/sbx_1":
-		a.mu.Lock()
-		a.deletes++
-		status := a.deleteStatus
-		a.mu.Unlock()
-		if status == 0 {
-			status = http.StatusNoContent
-		}
-		w.WriteHeader(status)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (a *testAPI) handleCreate(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.creates++
+	a.idempotencyKey = append(a.idempotencyKey, r.Header.Get("Idempotency-Key"))
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+		a.createBody = body
+	}
+	handler := a.createHandler
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	writeSandbox(w, http.StatusCreated, StateStarting, a.server.URL)
+}
+
+func (a *testAPI) handleGet(w http.ResponseWriter, r *http.Request, id string) {
+	a.mu.Lock()
+	a.gets++
+	handler := a.getHandler
+	if a.getFailures > 0 {
+		a.getFailures--
+		a.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, "http_error", "temporary")
+		return
+	}
+	if handler != nil {
+		a.mu.Unlock()
+		handler(w, r)
+		return
+	}
+	state := a.state
+	reason := ""
+	if id != "sbx_1" {
+		state = a.childStates[id]
+		if state == StateStarting {
+			// A fork copy boots between the fork answer and the first read.
+			state = StateRunning
+			a.childStates[id] = StateRunning
+		}
+		reason = a.childReasons[id]
+	}
+	a.mu.Unlock()
+	if state == "" {
+		writeError(w, http.StatusNotFound, "not_found", "no such sandbox")
+		return
+	}
+	writeSandboxAt(w, http.StatusOK, id, state, reason, a.server.URL)
+}
+
+func (a *testAPI) handleDelete(w http.ResponseWriter, id string) {
+	a.mu.Lock()
+	a.deletes++
+	status := a.deleteStatus
+	if id != "sbx_1" {
+		a.childDeletes++
+		a.childStates[id] = StateDeleted
+	}
+	a.mu.Unlock()
+	if status == 0 {
+		status = http.StatusNoContent
+	}
+	w.WriteHeader(status)
+}
+
+func (a *testAPI) handleVerb(w http.ResponseWriter, r *http.Request, id, verb string) {
+	switch verb {
+	case "pause":
+		a.handlePause(w, r, id)
+	case "resume":
+		a.handleResume(w, r, id)
+	case "refresh":
+		a.handleRefresh(w, r)
+	case "fork":
+		a.handleFork(w, r, id)
+	case "extend":
+		a.handleExtend(w, r, id)
+	case "timeout":
+		a.handleTimeout(w, r, id)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (a *testAPI) handlePause(w http.ResponseWriter, r *http.Request, id string) {
+	a.mu.Lock()
+	a.pauses++
+	handler := a.pauseHandler
+	if handler == nil {
+		a.state = StatePaused
+	}
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	writeSandbox(w, http.StatusAccepted, StatePausing, a.server.URL)
+}
+
+func (a *testAPI) handleResume(w http.ResponseWriter, r *http.Request, id string) {
+	a.mu.Lock()
+	a.resumes++
+	handler := a.resumeHandler
+	if handler == nil {
+		a.state = StateRunning
+	}
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	writeSandbox(w, http.StatusAccepted, StateStarting, a.server.URL)
+}
+
+func (a *testAPI) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.refreshes++
+	handler := a.refreshHandler
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *testAPI) handleFork(w http.ResponseWriter, r *http.Request, parentID string) {
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	a.mu.Lock()
+	a.forks++
+	a.forkBody = body
+	a.forkKey = r.Header.Get("Idempotency-Key")
+	handler := a.forkHandler
+	if len(a.childStates) == 0 {
+		a.childStates["sbx_f1"] = StateStarting
+		a.childStates["sbx_f2"] = StateStarting
+	}
+	ids := make([]string, 0, 2)
+	documents := make([]map[string]any, 0, 2)
+	for _, id := range []string{"sbx_f1", "sbx_f2"} {
+		if _, ok := a.childStates[id]; !ok {
+			continue
+		}
+		ids = append(ids, id)
+		documents = append(documents, sandboxFields(id, a.childStates[id], a.childReasons[id], a.server.URL))
+	}
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	count := 2
+	if value, ok := body["count"].(float64); ok {
+		count = int(value)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"fork": map[string]any{
+			"id":         "frk_1",
+			"parentId":   parentID,
+			"count":      count,
+			"status":     "active",
+			"sandboxIds": ids,
+		},
+		"sandboxes": documents,
+	})
+}
+
+func (a *testAPI) handleExtend(w http.ResponseWriter, r *http.Request, id string) {
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	a.mu.Lock()
+	a.extends++
+	a.extendBody = body
+	a.extendKey = r.Header.Get("Idempotency-Key")
+	handler := a.extendHandler
+	state := a.state
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	document := sandboxFields(id, state, "", a.server.URL)
+	document["expiresAt"] = "2026-11-21T12:00:00Z"
+	writeJSON(w, http.StatusOK, map[string]any{"sandbox": document, "capped": true})
+}
+
+func (a *testAPI) handleTimeout(w http.ResponseWriter, r *http.Request, id string) {
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	a.mu.Lock()
+	a.timeouts++
+	a.timeoutBody = body
+	a.timeoutKey = r.Header.Get("Idempotency-Key")
+	handler := a.timeoutHandler
+	state := a.state
+	a.mu.Unlock()
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	document := sandboxFields(id, state, "", a.server.URL)
+	document["expiresAt"] = "2026-11-21T12:00:00Z"
+	if value, ok := body["expiresAt"].(string); ok {
+		document["expiresAt"] = value
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sandbox": document, "capped": false})
 }
 
 func (a *testAPI) client(options ...Option) *Client {
@@ -126,14 +336,24 @@ func (a *testAPI) counts() (creates, gets, execs, deletes int) {
 }
 
 func writeSandbox(w http.ResponseWriter, status int, state, base string) {
-	writeJSON(w, status, map[string]any{
-		"sandbox": map[string]any{
-			"id":          "sbx_1",
-			"state":       state,
-			"template":    DefaultTemplate,
-			"toolboxBase": base + "/v1/sandbox/sbx_1",
-		},
-	})
+	writeSandboxAt(w, status, "sbx_1", state, "", base)
+}
+
+func writeSandboxAt(w http.ResponseWriter, status int, id, state, reason, base string) {
+	writeJSON(w, status, map[string]any{"sandbox": sandboxFields(id, state, reason, base)})
+}
+
+func sandboxFields(id, state, reason, base string) map[string]any {
+	document := map[string]any{
+		"id":          id,
+		"state":       state,
+		"template":    DefaultTemplate,
+		"toolboxBase": base + "/v1/sandbox/" + id,
+	}
+	if reason != "" {
+		document["errorReason"] = reason
+	}
+	return document
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
