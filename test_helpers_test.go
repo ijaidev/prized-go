@@ -24,6 +24,7 @@ type testAPI struct {
 	getFailures    int
 	createHandler  http.HandlerFunc
 	execHandler    http.HandlerFunc
+	getHandler     http.HandlerFunc
 	createBody     map[string]any
 	idempotencyKey []string
 }
@@ -57,6 +58,7 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		a.gets++
 		state := a.state
+		handler := a.getHandler
 		if a.getFailures > 0 {
 			a.getFailures--
 			a.mu.Unlock()
@@ -64,6 +66,10 @@ func (a *testAPI) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
 		writeSandbox(w, http.StatusOK, state, a.server.URL)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/sandbox/sbx_1/process/execute":
 		a.mu.Lock()

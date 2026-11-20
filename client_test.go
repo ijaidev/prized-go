@@ -281,11 +281,49 @@ func TestCreateFailedWaitDeletesSandbox(t *testing.T) {
 	}
 }
 
+type manualDeadlineContext struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *manualDeadlineContext) Done() <-chan struct{} { return c.done }
+
+func (c *manualDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 func TestCreateTimeoutDeletesSandbox(t *testing.T) {
 	api := newTestAPI(t)
 	api.state = StateStarting
+	polled := make(chan struct{})
+	release := make(chan struct{})
+	api.getHandler = func(http.ResponseWriter, *http.Request) {
+		close(polled)
+		<-release
+	}
+	defer close(release)
 
-	_, err := api.createSandbox(t, CreateSandboxOptions{Timeout: 30 * time.Millisecond})
+	// The parent has no deadline of its own; closing its Done channel during
+	// the first poll forces the wait timeout deterministically, after the
+	// create was accepted.
+	ctx := &manualDeadlineContext{Context: context.Background(), done: make(chan struct{})}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-polled:
+			close(ctx.done)
+		case <-stop:
+		}
+	}()
+
+	client := api.client()
+	_, err := client.Sandboxes().Create(ctx, CreateSandboxOptions{Timeout: 10 * time.Second})
 	var failure *Error
 	if !errors.As(err, &failure) || failure.Code != "timeout" {
 		t.Fatalf("error = %v, want timeout", err)
