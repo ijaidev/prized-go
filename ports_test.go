@@ -192,8 +192,9 @@ func TestPreviewTokenRetryRules(t *testing.T) {
 		status int
 		code   string
 		reason string
+		effect Effect
 	}{
-		{name: "server error", status: http.StatusInternalServerError, code: "http_error"},
+		{name: "server error", status: http.StatusInternalServerError, code: "http_error", effect: EffectMaybeRan},
 		{name: "paid workspace", status: http.StatusPaymentRequired, code: "share_links_need_payment", reason: "free_credit"},
 		{name: "public port limit", status: http.StatusConflict, code: "share_link_limit", reason: "public_ports"},
 		{name: "ingress off", status: http.StatusServiceUnavailable, code: "preview_unavailable"},
@@ -222,6 +223,9 @@ func TestPreviewTokenRetryRules(t *testing.T) {
 			}
 			if test.reason != "" && failure.Reason != test.reason {
 				t.Fatalf("reason = %q, want %q", failure.Reason, test.reason)
+			}
+			if failure.Effect != test.effect {
+				t.Fatalf("effect = %s, want %s", failure.Effect, test.effect)
 			}
 			api.mu.Lock()
 			defer api.mu.Unlock()
@@ -322,6 +326,7 @@ func TestSetPortPublicRefusals(t *testing.T) {
 		{name: "not the owner", status: http.StatusForbidden, code: "not_allowed", reason: "owner_key"},
 		{name: "public port limit", status: http.StatusConflict, code: "share_link_limit", reason: "public_ports"},
 		{name: "policy", status: http.StatusForbidden, code: "policy_denied", reason: "anyoneLinksOwnerOnly"},
+		{name: "ingress off", status: http.StatusServiceUnavailable, code: "preview_unavailable"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

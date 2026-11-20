@@ -256,6 +256,8 @@ type httpResponse struct {
 	body   []byte
 }
 
+// neverRetry lists refusals that no wait can change. Because they also prove
+// the request did nothing, a 5xx carrying one keeps EffectNotRun.
 var neverRetry = map[string]bool{
 	"sandbox_quota_exceeded":   true,
 	"sandboxes_disabled":       true,
@@ -397,7 +399,7 @@ func (c *Client) do(ctx context.Context, spec requestSpec) (*httpResponse, error
 
 		failure := errorFromResponse(response.StatusCode, body, response.Header, spec.sandboxID)
 		if response.StatusCode >= 500 && spec.mode != requestRead {
-			if !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] {
+			if !execUndelivered[failure.Code] && !refusedBeforeCreate[failure.Code] && !neverRetry[failure.Code] {
 				failure.Effect = EffectMaybeRan
 			}
 		}
