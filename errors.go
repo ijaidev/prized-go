@@ -10,15 +10,17 @@ import (
 	"time"
 )
 
-// Effect says whether an operation reached the service before it failed.
+// Effect says whether the operation the caller asked for took effect, or may
+// have. A write whose staged upload failed is EffectNotRun: its bytes may have
+// reached the sandbox under a temporary name, but the target was not changed.
 type Effect int
 
 const (
-	// EffectNotRun means the request provably never ran.
+	// EffectNotRun means the operation provably did not take effect.
 	EffectNotRun Effect = iota
-	// EffectMaybeRan means the request may have run: its answer was lost.
+	// EffectMaybeRan means the operation may have taken effect: its answer was lost.
 	EffectMaybeRan
-	// EffectRan means the request ran, whatever happened to its answer.
+	// EffectRan means the operation definitely ran, whatever happened to its answer.
 	EffectRan
 )
 
@@ -40,7 +42,7 @@ func (e Effect) String() string {
 // machine-readable error, or one of the client's own codes such as
 // missing_api_key, network_error, timeout, canceled, bad_response, or
 // handle_closed. Body is the decoded error document when the answer carried
-// one. Effect classifies whether the operation ran before the failure.
+// one. Effect classifies whether the operation took effect or may have.
 type Error struct {
 	Code       string
 	Status     int
